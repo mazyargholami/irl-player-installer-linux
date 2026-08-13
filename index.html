@@ -1,290 +1,481 @@
-<title>IRL Player — Raspberry Pi Kiosk Guide</title>
+<meta charset="utf-8">
+<title>IRL Player for Linux — Setup Guide</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='2' y='8' width='60' height='40' rx='7' fill='%23C7053D'/%3E%3Cpolygon points='26,18 46,28 26,38' fill='white'/%3E%3Crect x='20' y='52' width='24' height='5' rx='2.5' fill='%23C7053D'/%3E%3C/svg%3E">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root {
     --paper: #FAF7F8;
     --ink: #221C26;
     --muted: #6E6472;
-    --line: #E6DEE2;
+    --line: #E8E0E4;
     --accent: #C7053D;
     --accent-ink: #C7053D;
+    --accent-soft: #FBEAEF;
     --card: #FFFFFF;
-    --term-bg: #16111A;
-    --term-ink: #EDE6EF;
-    --term-prompt: #3FD97F;
-    --term-comment: #8A7E90;
+    --screen-bg: #14101A;
+    --screen-edge: #2A2233;
+    --screen-ink: #F2ECF4;
+    --live: #34D274;
     --kbd-bg: #F1EAEE;
     --kbd-line: #D8CDD4;
-    --ok: #1E8A50;
+    --shadow: 0 18px 50px -22px rgba(34, 5, 20, 0.35);
   }
   :root:not([data-theme="light"]) { color-scheme: light dark; }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
-      --paper: #171219;
-      --ink: #EFE8F0;
-      --muted: #A2949F;
+      --paper: #151017;
+      --ink: #F0E9F1;
+      --muted: #A79AA4;
       --line: #322A36;
       --accent: #C7053D;
       --accent-ink: #FF5C87;
-      --card: #1F1822;
-      --term-bg: #100C13;
-      --term-ink: #EDE6EF;
-      --term-prompt: #3FD97F;
-      --term-comment: #7D7286;
+      --accent-soft: #33131E;
+      --card: #1E1722;
+      --screen-bg: #0D0A11;
+      --screen-edge: #322940;
+      --screen-ink: #F2ECF4;
+      --live: #3EE585;
       --kbd-bg: #2A2230;
       --kbd-line: #453A4B;
-      --ok: #45C97E;
+      --shadow: 0 18px 50px -20px rgba(0, 0, 0, 0.7);
     }
   }
   :root[data-theme="dark"] {
-    --paper: #171219;
-    --ink: #EFE8F0;
-    --muted: #A2949F;
+    --paper: #151017;
+    --ink: #F0E9F1;
+    --muted: #A79AA4;
     --line: #322A36;
     --accent: #C7053D;
     --accent-ink: #FF5C87;
-    --card: #1F1822;
-    --term-bg: #100C13;
-    --term-ink: #EDE6EF;
-    --term-prompt: #3FD97F;
-    --term-comment: #7D7286;
+    --accent-soft: #33131E;
+    --card: #1E1722;
+    --screen-bg: #0D0A11;
+    --screen-edge: #322940;
+    --screen-ink: #F2ECF4;
+    --live: #3EE585;
     --kbd-bg: #2A2230;
     --kbd-line: #453A4B;
-    --ok: #45C97E;
+    --shadow: 0 18px 50px -20px rgba(0, 0, 0, 0.7);
   }
 
   * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
   body {
     margin: 0;
     background: var(--paper);
     color: var(--ink);
     font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   }
-  .wrap { max-width: 700px; margin: 0 auto; padding: 3.5rem 1.25rem 5rem; }
+  .wrap { max-width: 780px; margin: 0 auto; padding: 3rem 1.25rem 4.5rem; }
 
+  /* ---------- hero ---------- */
   .eyebrow {
+    display: flex; align-items: center; gap: 0.55rem;
     color: var(--accent-ink);
-    font-size: 0.75rem;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    margin: 0 0 0.75rem;
+    font-size: 0.75rem; font-weight: 800;
+    letter-spacing: 0.16em; text-transform: uppercase;
+    margin: 0 0 1rem;
   }
+  .eyebrow svg { flex: none; }
   h1 {
-    font-size: clamp(2rem, 6vw, 2.75rem);
-    line-height: 1.1;
-    font-weight: 800;
-    letter-spacing: -0.02em;
+    font-size: clamp(2.2rem, 7vw, 3.4rem);
+    line-height: 1.04;
+    font-weight: 850;
+    letter-spacing: -0.03em;
     margin: 0 0 1rem;
     text-wrap: balance;
   }
-  .lede { color: var(--muted); font-size: 1.075rem; margin: 0 0 2.5rem; max-width: 58ch; }
-
-  h2 {
-    font-size: 1.35rem;
-    font-weight: 750;
-    letter-spacing: -0.01em;
-    margin: 3rem 0 0.75rem;
-    padding-top: 2.25rem;
-    border-top: 1px solid var(--line);
-    text-wrap: balance;
+  h1 em { font-style: normal; color: var(--accent-ink); }
+  .lede {
+    color: var(--muted); font-size: 1.1rem;
+    margin: 0 0 2rem; max-width: 56ch; text-wrap: pretty;
   }
-  h2:first-of-type { border-top: 0; padding-top: 0; }
-  p { margin: 0.75rem 0; max-width: 62ch; }
-  .note { color: var(--muted); font-size: 0.925rem; }
-  a { color: var(--accent-ink); }
 
-  /* terminal blocks — dark in both themes, like a real shell */
-  .term {
-    background: var(--term-bg);
-    color: var(--term-ink);
-    border-radius: 10px;
-    padding: 1rem 1.1rem;
-    margin: 1rem 0;
+  /* the TV — install command lives on screen */
+  .tv { margin: 2.25rem 0 0.75rem; }
+  .screen {
     position: relative;
-    overflow-x: auto;
-    font: 0.85rem/1.7 ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    background:
+      radial-gradient(120% 160% at 20% -20%, rgba(199, 5, 61, 0.28), transparent 55%),
+      radial-gradient(130% 150% at 90% 120%, rgba(63, 40, 84, 0.55), transparent 60%),
+      var(--screen-bg);
+    border: 1px solid var(--screen-edge);
+    border-radius: 18px;
+    box-shadow: var(--shadow), inset 0 0 60px rgba(0,0,0,0.35);
+    padding: 2.4rem 1.6rem 1.9rem;
+    overflow: hidden;
   }
-  .term code { display: block; white-space: pre; padding-right: 4.5rem; }
-  .term .p { color: var(--term-prompt); user-select: none; }
-  .term .c { color: var(--term-comment); }
-  .copy {
-    position: absolute; top: 0.6rem; right: 0.6rem;
-    background: rgba(255,255,255,0.08);
-    color: var(--term-ink);
-    border: 1px solid rgba(255,255,255,0.18);
-    border-radius: 6px;
-    font: 600 0.72rem/1 inherit;
-    font-family: inherit;
-    padding: 0.45rem 0.65rem;
-    cursor: pointer;
+  .live {
+    position: absolute; top: 1rem; right: 1.1rem;
+    display: inline-flex; align-items: center; gap: 0.45rem;
+    color: var(--live);
+    font: 800 0.68rem/1 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    letter-spacing: 0.22em;
   }
-  .copy:hover { background: rgba(255,255,255,0.16); }
-  .copy:focus-visible { outline: 2px solid var(--term-prompt); outline-offset: 2px; }
-  .copy.done { color: var(--term-prompt); border-color: var(--term-prompt); }
+  .live .dot { width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--live); animation: pulse 1.8s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.35; transform: scale(0.8); } }
+  @media (prefers-reduced-motion: reduce) { .live .dot { animation: none; } }
 
-  /* install steps — a real sequence, so numbers carry meaning */
-  ol.steps { margin: 1.25rem 0; padding: 0; list-style: none; counter-reset: step; display: grid; gap: 0.9rem; }
-  ol.steps li { counter-increment: step; display: grid; grid-template-columns: 2rem 1fr; gap: 0.75rem; }
-  ol.steps li::before {
-    content: counter(step);
-    width: 1.7rem; height: 1.7rem;
-    border-radius: 50%;
+  .screen .logo { display: block; height: 44px; width: auto; margin: 0 0 1.4rem; }
+  .screen .label {
+    color: var(--screen-ink); opacity: 0.55;
+    font-size: 0.8rem; font-weight: 600;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    margin: 0 0 0.8rem;
+  }
+  .cmdrow { display: flex; gap: 0.6rem; align-items: stretch; flex-wrap: wrap; }
+  .cmd {
+    flex: 1 1 320px;
+    display: block;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 10px;
+    color: var(--screen-ink);
+    font: 0.88rem/1.5 ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    padding: 0.85rem 1rem;
+    overflow-x: auto; white-space: nowrap;
+    scrollbar-width: none;
+  }
+  .cmd::-webkit-scrollbar { display: none; }
+  .btn {
+    flex: none;
+    display: inline-flex; align-items: center; gap: 0.5rem;
     background: var(--accent);
     color: #fff;
-    font-weight: 700; font-size: 0.85rem;
-    display: flex; align-items: center; justify-content: center;
-    margin-top: 0.15rem;
+    border: 0; border-radius: 10px;
+    font: 700 0.9rem/1 inherit; font-family: inherit;
+    padding: 0 1.3rem; min-height: 3rem;
+    cursor: pointer;
+    transition: transform 0.12s ease, filter 0.12s ease;
   }
+  .btn:hover { filter: brightness(1.12); transform: translateY(-1px); }
+  .btn:active { transform: translateY(0); }
+  .btn:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+  .btn.done { background: #1E8A50; }
+  .screen .hint { color: var(--screen-ink); opacity: 0.5; font-size: 0.8rem; margin: 0.8rem 0 0; }
+  .stand { width: 30%; max-width: 220px; height: 7px; margin: 0 auto; background: var(--line); border-radius: 0 0 8px 8px; }
+
+  .pills { display: flex; flex-wrap: wrap; gap: 0.45rem; margin: 1.6rem 0 0; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 0.45rem;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 0.35rem 0.9rem;
+    font-size: 0.82rem; font-weight: 600;
+    color: var(--muted);
+  }
+  .pill.ok::before { content: ""; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--live); }
+  .pill.soon::before { content: ""; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--kbd-line); }
+
+  /* ---------- sections ---------- */
+  section { margin-top: 4rem; }
+  h2 {
+    font-size: clamp(1.4rem, 4vw, 1.8rem);
+    font-weight: 800; letter-spacing: -0.02em;
+    margin: 0 0 0.4rem; text-wrap: balance;
+  }
+  .sub { color: var(--muted); margin: 0 0 1.5rem; max-width: 58ch; }
+
+  /* step cards */
+  .steps { display: grid; gap: 0.9rem; counter-reset: step; }
+  .step {
+    counter-increment: step;
+    display: grid; grid-template-columns: 3rem 1fr; gap: 1rem;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 1.15rem 1.25rem;
+  }
+  .step::before {
+    content: counter(step);
+    width: 2.4rem; height: 2.4rem;
+    border-radius: 50%;
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    font-weight: 800; font-size: 1.05rem;
+    display: flex; align-items: center; justify-content: center;
+    margin-top: 0.1rem;
+  }
+  .step h3 { margin: 0.15rem 0 0.35rem; font-size: 1.02rem; font-weight: 750; }
+  .step p { margin: 0; color: var(--muted); font-size: 0.94rem; text-wrap: pretty; }
+  .step p strong { color: var(--ink); }
+  .step a { color: var(--accent-ink); font-weight: 600; }
+
+  /* everyday-use cards */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 0.9rem; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 1.2rem 1.25rem;
+  }
+  .card .icon {
+    width: 2.4rem; height: 2.4rem; border-radius: 10px;
+    background: var(--accent-soft);
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 0.7rem;
+  }
+  .card .icon svg { stroke: var(--accent-ink); }
+  .card h3 { margin: 0 0 0.3rem; font-size: 1rem; font-weight: 750; }
+  .card p { margin: 0; color: var(--muted); font-size: 0.92rem; text-wrap: pretty; }
+  .card p strong { color: var(--ink); }
 
   kbd {
     background: var(--kbd-bg);
     border: 1px solid var(--kbd-line);
     border-bottom-width: 2px;
     border-radius: 6px;
-    padding: 0.1rem 0.45rem;
-    font: 600 0.85em ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    padding: 0.08rem 0.42rem;
+    font: 650 0.85em ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    white-space: nowrap;
   }
 
-  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.925rem; }
-  th, td { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
-  td code { font: 0.85em ui-monospace, "SF Mono", Menlo, Consolas, monospace; background: var(--kbd-bg); padding: 0.1rem 0.35rem; border-radius: 4px; white-space: nowrap; }
-  .tablewrap { overflow-x: auto; }
-
-  ul { padding-left: 1.2rem; }
-  li { margin: 0.4rem 0; }
-
-  .pill {
-    display: inline-flex; align-items: center; gap: 0.4rem;
+  /* fix-it list */
+  .fix { display: grid; gap: 0.65rem; }
+  .fixrow {
+    display: grid; grid-template-columns: auto 1fr; gap: 0.8rem; align-items: start;
     background: var(--card);
     border: 1px solid var(--line);
-    border-radius: 999px;
-    padding: 0.3rem 0.85rem;
-    font-size: 0.8rem; font-weight: 600;
-    color: var(--muted);
-    margin: 0 0.35rem 0.5rem 0;
+    border-left: 4px solid var(--accent);
+    border-radius: 12px;
+    padding: 0.95rem 1.1rem;
   }
-  .pill .dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--ok); }
+  .fixrow .q { font-weight: 750; font-size: 0.95rem; }
+  .fixrow .a { color: var(--muted); font-size: 0.92rem; margin-top: 0.15rem; text-wrap: pretty; }
+  .fixrow .a strong { color: var(--ink); }
+  .fixrow svg { stroke: var(--accent-ink); margin-top: 0.2rem; }
 
-  footer { margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.85rem; }
+  /* uninstall */
+  .quiet {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 1.3rem 1.4rem;
+  }
+  .quiet .cmdrow { margin-top: 0.9rem; }
+  .quiet .cmd { background: var(--kbd-bg); border-color: var(--kbd-line); color: var(--ink); }
+
+  footer {
+    margin-top: 4.5rem; padding-top: 1.4rem;
+    border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 0.82rem;
+    display: flex; flex-wrap: wrap; gap: 0.3rem 1.2rem; justify-content: space-between;
+  }
+
+  /* ---------- phones ---------- */
+  @media (max-width: 560px) {
+    .wrap { padding: 2rem 1rem 3.5rem; }
+    .lede { font-size: 1rem; }
+    .screen { padding: 1.5rem 1.1rem 1.3rem; border-radius: 14px; }
+    .screen .logo { height: 34px; margin-bottom: 1.1rem; }
+    .live { top: 0.85rem; right: 0.9rem; }
+    .cmd { flex-basis: 100%; font-size: 0.78rem; padding: 0.75rem 0.85rem; }
+    .btn { width: 100%; justify-content: center; min-height: 2.9rem; }
+    section { margin-top: 3rem; }
+    .step { grid-template-columns: 2.3rem 1fr; gap: 0.7rem; padding: 1rem 0.95rem; }
+    .step::before { width: 2rem; height: 2rem; font-size: 0.95rem; }
+    .quiet { padding: 1.1rem 1rem; }
+    footer { flex-direction: column; }
+  }
 </style>
 
 <div class="wrap">
-  <p class="eyebrow">IRL Network · Screen Player</p>
-  <h1>Turn a Raspberry Pi into a dedicated IRL&nbsp;Player screen</h1>
+
+  <p class="eyebrow">
+    <svg width="18" height="14" viewBox="0 0 64 48" aria-hidden="true"><rect x="2" y="2" width="60" height="38" rx="7" fill="var(--accent)"/><polygon points="26,12 46,21 26,30" fill="#fff"/></svg>
+    IRL Network · Linux Player
+  </p>
+  <h1>Turn any screen into an <em>IRL&nbsp;Player</em>.</h1>
   <p class="lede">
-    One command installs the player and locks it fullscreen on the top layer.
-    No desktop, no notifications, no screensaver — the app boots straight to
-    the screen and restarts itself if it ever crashes.
+    One command turns a small Linux device into a dedicated IRL Network
+    screen. It starts by itself when powered on, plays fullscreen with
+    nothing else on the display, and recovers on its own if anything goes
+    wrong. No technical skills needed.
   </p>
 
-  <span class="pill"><span class="dot"></span>Raspberry Pi 3 / 4 / 5 / Zero 2 W</span>
-  <span class="pill"><span class="dot"></span>Raspberry Pi OS 64-bit (Lite or Desktop)</span>
-  <span class="pill"><span class="dot"></span>Internet during install</span>
-
-  <h2 id="install">Install</h2>
-  <ol class="steps">
-    <li><div>Flash <strong>Raspberry Pi OS 64-bit</strong> with Raspberry Pi Imager and boot the Pi. Lite is enough — no desktop needed.</div></li>
-    <li><div>Open a terminal on the Pi (or SSH into it) and run:
-      <div class="term"><button class="copy" type="button">Copy</button><code><span class="p">$</span> curl -fsSL https://linux-player.theirlnetwork.com/install.sh | sudo bash</code></div>
-    </div></li>
-    <li><div>That's it. The player starts fullscreen right away and on every boot from now on.</div></li>
-  </ol>
-  <p class="note">
-    The installer checks it is really running on a Raspberry Pi with a 64-bit
-    OS before touching anything, then installs the player package, the kiosk
-    compositor, and the boot service.
-  </p>
-
-  <h2 id="hotkey">On top ↔ normal: the hotkey</h2>
-  <p>
-    The player is <strong>on top by default</strong> — at boot and after
-    install. With a keyboard plugged into the Pi:
-  </p>
-  <p>
-    <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>P</kbd> — switch between kiosk
-    mode (fullscreen, on top) and the normal layer (console login, or the
-    desktop if one is installed). Press it again to put the player back on top.
-  </p>
-  <p class="note">
-    The hotkey reads raw keyboard input, so it works no matter what is on
-    screen. Without a keyboard attached, nothing can interrupt the player.
-  </p>
-
-  <h2 id="manage">Manage the player</h2>
-  <p>From a terminal or over SSH:</p>
-  <div class="term"><button class="copy" type="button">Copy</button><code><span class="c"># is it running?</span>
-<span class="p">$</span> sudo systemctl status irl-player-kiosk
-
-<span class="c"># watch live logs</span>
-<span class="p">$</span> journalctl -u irl-player-kiosk -f
-
-<span class="c"># restart the app</span>
-<span class="p">$</span> sudo systemctl restart irl-player-kiosk
-
-<span class="c"># stop until next boot</span>
-<span class="p">$</span> sudo systemctl stop irl-player-kiosk
-
-<span class="c"># same as pressing Ctrl+Alt+P</span>
-<span class="p">$</span> sudo irl-kiosk-toggle</code></div>
-
-  <h2 id="uninstall">Uninstall</h2>
-  <p>Removes the service, the hotkey, the package, and the kiosk user:</p>
-  <div class="term"><button class="copy" type="button">Copy</button><code><span class="p">$</span> curl -fsSL https://linux-player.theirlnetwork.com/uninstall.sh | sudo bash</code></div>
-  <p class="note">
-    If the Pi originally booted to a desktop, bring it back afterwards with
-    <code style="font-family: ui-monospace, Menlo, monospace;">sudo systemctl enable --now lightdm</code>.
-  </p>
-
-  <h2 id="how">How it works</h2>
-  <div class="tablewrap">
-  <table>
-    <tr><th>Piece</th><th>What it does</th></tr>
-    <tr><td><code>irl-player.deb</code></td><td>The player app, installed to <code>/opt/irl-player</code> with its dependencies via apt.</td></tr>
-    <tr><td><code>cage</code></td><td>A kiosk compositor that runs exactly one app, maximized, permanently on top. There is no desktop underneath — no window can ever cover the player.</td></tr>
-    <tr><td><code>irl-player-kiosk</code></td><td>systemd service that boots straight into the player on tty1 as an unprivileged user and restarts it within 3 seconds if it crashes.</td></tr>
-    <tr><td><code>irl-player-hotkey</code></td><td>Small background service that listens for <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>P</kbd> and toggles the layer.</td></tr>
-  </table>
+  <div class="tv">
+    <div class="screen">
+      <span class="live"><span class="dot"></span>LIVE</span>
+      <img class="logo" src="data:image/png;base64,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" alt="IRL Network" width="123" height="48">
+      <p class="label">Paste this in the device's terminal</p>
+      <div class="cmdrow">
+        <code class="cmd" id="install-cmd">curl -fsSL https://linux-player.theirlnetwork.com/install.sh | sudo bash</code>
+        <button class="btn" type="button" data-copy="install-cmd">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+          Copy
+        </button>
+      </div>
+      <p class="hint">The player appears on screen right away — and on every power-on after that.</p>
+    </div>
+    <div class="stand"></div>
   </div>
-  <p>
-    Screen blanking is disabled at install, and there is no screensaver or
-    lock screen in the kiosk environment — the display stays on 24/7.
-  </p>
 
-  <h2 id="trouble">Troubleshooting</h2>
-  <ul>
-    <li><strong>Black screen after install</strong> — check the logs:
-      <code style="font-family: ui-monospace, Menlo, monospace;">journalctl -u irl-player-kiosk -e</code>.
-      The most common cause is a 32-bit OS image; the player needs Raspberry Pi OS <em>64-bit</em>.</li>
-    <li><strong>No audio</strong> — the kiosk runs outside a desktop session, so sound goes through ALSA
-      directly. Pick the right output in <code style="font-family: ui-monospace, Menlo, monospace;">sudo raspi-config</code> → System Options → Audio.</li>
-    <li><strong>Mouse cursor or title bar on screen</strong> — re-run the install command;
-      current versions hide the cursor with a transparent theme and run the app borderless.</li>
-    <li><strong>Stuck and no keyboard?</strong> — SSH in and run
-      <code style="font-family: ui-monospace, Menlo, monospace;">sudo systemctl stop irl-player-kiosk</code>, or power-cycle the Pi; it recovers cleanly.</li>
-  </ul>
+  <div class="pills">
+    <span class="pill ok">Raspberry Pi 3 · 4 · 5 · Zero 2 W</span>
+    <span class="pill ok">Raspberry Pi OS 64-bit</span>
+    <span class="pill soon">More Linux devices coming soon</span>
+  </div>
+
+  <section id="setup">
+    <h2>Starting from zero with a Raspberry Pi</h2>
+    <p class="sub">
+      Never touched a Raspberry Pi before? This is everything, start to
+      finish. You need a Raspberry Pi, a microSD card (16&nbsp;GB or more), a
+      screen with an HDMI cable, and Wi-Fi or a network cable.
+    </p>
+    <div class="steps">
+      <div class="step">
+        <div>
+          <h3>Put the system on the memory card</h3>
+          <p>On your computer, install <a href="https://www.raspberrypi.com/software/">Raspberry Pi Imager</a>
+          and insert the microSD card. Choose your Pi model, then the system:
+          <strong>Raspberry Pi OS (64-bit)</strong>. Before writing, the Imager asks about
+          settings — set your <strong>Wi-Fi name and password</strong> there so the Pi
+          connects to the internet by itself. Then write the card.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div>
+          <h3>Plug everything in</h3>
+          <p>Put the card in the Pi. Connect the screen with the HDMI cable, plug in a
+          <strong>keyboard</strong> (just for the setup), and connect the power last.
+          The Pi turns on by itself — give it a minute on first start.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div>
+          <h3>Open the terminal</h3>
+          <p>When the Pi finishes starting, open the <strong>Terminal</strong> — the black
+          window where you can type. On the desktop version it's in the top menu bar;
+          if you only see text on a black screen, you're already there — just log in
+          with the username and password you chose in the Imager.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div>
+          <h3>Paste the command</h3>
+          <p>Copy the command from the top of this page, paste it into the terminal
+          (right-click → Paste, or <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd>) and press
+          <strong>Enter</strong>. It may ask for your password — type it and press Enter
+          (nothing shows while typing, that's normal). Then wait a few minutes.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div>
+          <h3>Done — it runs itself</h3>
+          <p>The player fills the screen. You can unplug the keyboard and mouse now.
+          From here on, the Pi is an IRL screen: <strong>give it power and it plays.</strong></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="everyday">
+    <h2>Everyday use</h2>
+    <p class="sub">There are no settings to worry about. These four things cover everything.</p>
+    <div class="cards">
+      <div class="card">
+        <div class="icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2.2" aria-hidden="true"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77 0"/></svg></div>
+        <h3>Turning it on and off</h3>
+        <p>Just plug the power in — the player starts by itself. To turn it off,
+        unplug it. <strong>That's safe</strong>; nothing needs shutting down first.</p>
+      </div>
+      <div class="card">
+        <div class="icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2.2" aria-hidden="true"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 21h8"/></svg></div>
+        <h3>Getting out of the player</h3>
+        <p>Plug in a keyboard and press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>P</kbd> to
+        leave the player and use the device normally. Press it again to bring the
+        player back on top.</p>
+      </div>
+      <div class="card">
+        <div class="icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2.2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></div>
+        <h3>Updating</h3>
+        <p>Run the same install command from the top of this page again. It updates
+        the player in place — nothing to remove first.</p>
+      </div>
+      <div class="card">
+        <div class="icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2.2" aria-hidden="true"><path d="M12 8v5"/><circle cx="12" cy="16" r="0.4"/><circle cx="12" cy="12" r="9.2"/></svg></div>
+        <h3>If it ever freezes</h3>
+        <p>Unplug the power, wait five seconds, plug it back in. The player comes
+        back on its own — it always recovers.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="fixit">
+    <h2>If something looks wrong</h2>
+    <p class="sub">The three things people actually run into, and the fix for each.</p>
+    <div class="fix">
+      <div class="fixrow">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke-width="2.2" aria-hidden="true"><rect x="2" y="4" width="20" height="14" rx="2"/><line x1="6" y1="21" x2="18" y2="21"/></svg>
+        <div>
+          <div class="q">The screen is black</div>
+          <div class="a">Check the HDMI cable and that the screen is on the right input.
+          Still black? During install, make sure you picked <strong>Raspberry Pi OS
+          (64-bit)</strong> in the Imager — the 32-bit version won't work. Re-flash the
+          card with the 64-bit one and install again.</div>
+        </div>
+      </div>
+      <div class="fixrow">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke-width="2.2" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>
+        <div>
+          <div class="q">There's no sound</div>
+          <div class="a">Most screens play sound through the HDMI cable automatically.
+          If yours doesn't, press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>P</kbd> to exit the
+          player, log in, type <strong>sudo raspi-config</strong>, choose <strong>System
+          Options → Audio</strong> and pick your speaker. Then press
+          <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>P</kbd> to go back.</div>
+        </div>
+      </div>
+      <div class="fixrow">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke-width="2.2" aria-hidden="true"><path d="M2 8a10.6 10.6 0 0 1 20 0"/><path d="M5.5 11.5a7 7 0 0 1 13 0"/><path d="M9 15a3.5 3.5 0 0 1 6 0"/><circle cx="12" cy="18.5" r="0.6"/></svg>
+        <div>
+          <div class="q">It says it's offline / nothing plays</div>
+          <div class="a">The device lost internet. If it's on Wi-Fi, make sure the router
+          is on and in range — the player reconnects by itself. To change to a new Wi-Fi
+          network, the easiest way is to re-flash the card with the Imager (enter the new
+          Wi-Fi there) and run the install command again.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="remove">
+    <div class="quiet">
+      <h2>Removing the player</h2>
+      <p class="sub" style="margin-bottom:0;">
+        Want the device back to normal? Press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>P</kbd>
+        to exit the player, log in, then paste this and press Enter:
+      </p>
+      <div class="cmdrow">
+        <code class="cmd" id="uninstall-cmd">curl -fsSL https://linux-player.theirlnetwork.com/uninstall.sh | sudo bash</code>
+        <button class="btn" type="button" data-copy="uninstall-cmd">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+          Copy
+        </button>
+      </div>
+    </div>
+  </section>
 
   <footer>
-    IRL Player · install scripts &amp; guide —
-    <a href="https://github.com/mazyargholami/irl-player-installer-linux">github.com/mazyargholami/irl-player-installer-linux</a>
-    <br>Guide version 5 · installer revision 6 · updated 2026-08-13 20:05
+    <span>IRL Player for Linux · IRL Network</span>
+    <span>Guide version 7 · installer revision 6</span>
   </footer>
 </div>
 
 <script>
-  document.querySelectorAll('.copy').forEach(function (btn) {
+  document.querySelectorAll('.btn[data-copy]').forEach(function (btn) {
     btn.addEventListener('click', function () {
-      var code = btn.parentElement.querySelector('code');
-      var lines = code.innerText.split('\n')
-        .map(function (l) { return l.replace(/^\$\s?/, ''); })
-        .filter(function (l) { return l.trim() && !l.trim().startsWith('#'); });
-      navigator.clipboard.writeText(lines.join('\n')).then(function () {
-        btn.textContent = 'Copied';
+      var text = document.getElementById(btn.getAttribute('data-copy')).textContent.trim();
+      navigator.clipboard.writeText(text).then(function () {
+        var label = btn.lastChild;
+        label.textContent = ' Copied!';
         btn.classList.add('done');
         setTimeout(function () {
-          btn.textContent = 'Copy';
+          label.textContent = ' Copy';
           btn.classList.remove('done');
-        }, 1600);
+        }, 1800);
       });
     });
   });
