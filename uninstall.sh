@@ -18,6 +18,7 @@ systemctl disable --now irl-player-hotkey 2>/dev/null || true
 rm -f "/etc/systemd/system/$SERVICE_NAME.service" \
       /etc/systemd/system/irl-player-hotkey.service \
       /usr/local/bin/irl-kiosk-toggle \
+      /usr/local/bin/irl-kiosk-run \
       /usr/local/bin/irl-hotkeyd
 rm -rf /etc/irl-player
 systemctl daemon-reload

@@ -32,7 +32,7 @@ SERVICE_NAME="irl-player-kiosk"
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=4
+INSTALLER_REV=5
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -70,8 +70,9 @@ log "Installing packages (cage kiosk compositor + deps)..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq cage xwayland curl ca-certificates python3-evdev
-# transparent cursor theme = invisible mouse pointer in kiosk mode
-apt-get install -y -qq xcursor-transparent-theme || log "xcursor-transparent-theme unavailable; cursor may be visible"
+# transparent cursor theme + X-level cursor hiding = invisible mouse pointer
+apt-get install -y -qq xcursor-transparent-theme || log "xcursor-transparent-theme unavailable"
+apt-get install -y -qq unclutter-xfixes || apt-get install -y -qq unclutter || log "unclutter unavailable; cursor may be visible"
 
 # --- 3. Get and install the .deb --------------------------------------------
 # If a local copy sits next to this script (repo checkout), use it;
@@ -129,6 +130,18 @@ else
   log "WARNING: transparent cursor theme not found; cursor may stay visible"
 fi
 
+# Launcher run inside cage: hides the X cursor at the server level
+# (XFixes), then starts the player. DISPLAY is set by cage's Xwayland.
+cat > /usr/local/bin/irl-kiosk-run <<'EOF'
+#!/bin/bash
+if command -v unclutter >/dev/null 2>&1; then
+  # unclutter-xfixes syntax first, classic unclutter as fallback
+  unclutter --timeout 1 --start-hidden --fork 2>/dev/null || unclutter -idle 1 -root &
+fi
+exec /opt/irl-player/IRLPlayer
+EOF
+chmod +x /usr/local/bin/irl-kiosk-run
+
 log "Writing /etc/systemd/system/$SERVICE_NAME.service ..."
 cat > "/etc/systemd/system/$SERVICE_NAME.service" <<EOF
 [Unit]
@@ -159,7 +172,7 @@ Environment=GDK_BACKEND=x11
 Environment=XCURSOR_PATH=/etc/irl-player/icons:/usr/share/icons
 Environment=XCURSOR_THEME=default
 Environment=XCURSOR_SIZE=24
-ExecStart=/usr/bin/cage -d -- $APP_BIN
+ExecStart=/usr/bin/cage -d -- /usr/local/bin/irl-kiosk-run
 Restart=always
 RestartSec=3
 
