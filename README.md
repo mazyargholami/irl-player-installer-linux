@@ -63,9 +63,9 @@ certificate automatically. You only pay for the domain itself at your
 registrar.
 
 1. At your DNS provider, add a record pointing at GitHub Pages:
-   - **Subdomain** (e.g. `player.mazr.org`) — add a `CNAME` record:
+   - **Subdomain** (e.g. `player.example.com`) — add a `CNAME` record:
      `player` → `mazyargholami.github.io`
-   - **Apex domain** (e.g. `mazr.org`) — add `A` records to
+   - **Apex domain** (e.g. `example.com`) — add `A` records to
      `185.199.108.153`, `185.199.109.153`, `185.199.110.153`,
      `185.199.111.153`
 2. On GitHub: **Settings → Pages → Custom domain** → enter the domain and
