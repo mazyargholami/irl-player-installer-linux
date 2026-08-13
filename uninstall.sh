@@ -19,6 +19,7 @@ rm -f "/etc/systemd/system/$SERVICE_NAME.service" \
       /etc/systemd/system/irl-player-hotkey.service \
       /usr/local/bin/irl-kiosk-toggle \
       /usr/local/bin/irl-hotkeyd
+rm -rf /etc/irl-player
 systemctl daemon-reload
 
 log "Removing irl-player package ..."

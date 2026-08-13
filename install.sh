@@ -112,10 +112,17 @@ if [ -n "$CMDLINE" ] && ! grep -q 'consoleblank=' "$CMDLINE"; then
 fi
 
 # --- 7. systemd kiosk service -------------------------------------------------
-# Resolve the transparent cursor theme's directory name (if installed)
-CURSOR_THEME="default"
+# Invisible mouse cursor: expose the transparent theme as the "default"
+# theme through a private XCURSOR_PATH, so every lookup path (compositor,
+# GTK, X fallback) resolves to it — but only inside the kiosk service.
 CURSOR_DIR="$(find /usr/share/icons -maxdepth 2 -name cursors -path '*transparent*' -print -quit 2>/dev/null || true)"
-[ -n "$CURSOR_DIR" ] && CURSOR_THEME="$(basename "$(dirname "$CURSOR_DIR")")"
+if [ -n "$CURSOR_DIR" ]; then
+  mkdir -p /etc/irl-player/icons/default
+  ln -sfn "$CURSOR_DIR" /etc/irl-player/icons/default/cursors
+  log "Cursor hidden via transparent theme ($CURSOR_DIR)"
+else
+  log "WARNING: transparent cursor theme not found; cursor may stay visible"
+fi
 
 log "Writing /etc/systemd/system/$SERVICE_NAME.service ..."
 cat > "/etc/systemd/system/$SERVICE_NAME.service" <<EOF
@@ -142,8 +149,10 @@ UtmpMode=user
 # X11 backend (via Xwayland): the Flutter runner drops its GTK title bar
 # on X11 with a non-GNOME WM, so the app is a clean borderless fullscreen
 Environment=GDK_BACKEND=x11
-# invisible cursor (transparent theme) for both the compositor and the app
-Environment=XCURSOR_THEME=$CURSOR_THEME
+# invisible cursor: "default" theme resolves to the transparent theme
+# through the private XCURSOR_PATH set up by the installer
+Environment=XCURSOR_PATH=/etc/irl-player/icons:/usr/share/icons
+Environment=XCURSOR_THEME=default
 Environment=XCURSOR_SIZE=24
 ExecStart=/usr/bin/cage -d -- $APP_BIN
 Restart=always
