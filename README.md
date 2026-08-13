@@ -56,6 +56,27 @@ the website, copy the install command, and run it — nothing else to host.
 > **Note:** Pages on a free GitHub account requires the repo to be
 > **public**. (Private repo + Pages needs GitHub Pro / Team.)
 
+## Custom domain (optional, free)
+
+GitHub Pages custom domains cost nothing — GitHub also issues a free HTTPS
+certificate automatically. You only pay for the domain itself at your
+registrar.
+
+1. At your DNS provider, add a record pointing at GitHub Pages:
+   - **Subdomain** (e.g. `player.mazr.org`) — add a `CNAME` record:
+     `player` → `mazyargholami.github.io`
+   - **Apex domain** (e.g. `mazr.org`) — add `A` records to
+     `185.199.108.153`, `185.199.109.153`, `185.199.110.153`,
+     `185.199.111.153`
+2. On GitHub: **Settings → Pages → Custom domain** → enter the domain and
+   save. Wait for the DNS check to pass, then tick **Enforce HTTPS**
+   (appears once the certificate is issued, usually within minutes).
+3. Update the URLs to the new domain in `BASE_URL` in `install.sh` and in
+   the install commands in `index.html` and this README, then push.
+
+The old `mazyargholami.github.io/...` URLs keep working — GitHub redirects
+them to the custom domain — so already-deployed devices are not affected.
+
 ## Releasing a new version
 
 1. Drop the new package into `packages/` — the file name must be
