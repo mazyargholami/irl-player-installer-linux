@@ -3,11 +3,11 @@
 # IRL Player kiosk installer for Raspberry Pi (arm64)
 #
 # One-line remote install (run on the Pi):
-#   curl -fsSL https://mazyargholami.github.io/irl-player-installer-linux/install.sh | sudo bash
+#   curl -fsSL https://linux-player.theirlnetwork.com/install.sh | sudo bash
 #
 # The script expects the .deb to be hosted next to it at the same base URL
-# (the GitHub Pages site by default — the repo itself is private, only the
-# published site is public; set IRL_BASE_URL to use your own server).
+# (the GitHub Pages site on the custom domain by default; set IRL_BASE_URL
+# to use another server).
 #
 # What it does:
 #   1. Verifies the machine is a Raspberry Pi running a 64-bit (arm64) OS
@@ -21,7 +21,7 @@
 set -euo pipefail
 
 # ----------------------- configuration -----------------------
-BASE_URL="${IRL_BASE_URL:-https://mazyargholami.github.io/irl-player-installer-linux}"
+BASE_URL="${IRL_BASE_URL:-https://linux-player.theirlnetwork.com}"
 VERSION="1.2.5"
 # Architectures with a build in packages/ — add e.g. "amd64" here once
 # packages/irl-player_<version>_amd64.deb exists.
@@ -32,7 +32,7 @@ SERVICE_NAME="irl-player-kiosk"
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=5
+INSTALLER_REV=6
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }

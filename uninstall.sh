@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # IRL Player kiosk uninstaller
-#   curl -fsSL https://mazyargholami.github.io/irl-player-installer-linux/uninstall.sh | sudo bash
+#   curl -fsSL https://linux-player.theirlnetwork.com/uninstall.sh | sudo bash
 #
 set -euo pipefail
 

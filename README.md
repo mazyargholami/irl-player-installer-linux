@@ -5,12 +5,12 @@ straight into fullscreen on the top layer with no desktop, no taskbar, no
 screensaver, no notifications — nothing can appear over it. If the app
 crashes, systemd restarts it within 3 seconds.
 
-**Website / help guide:** https://mazyargholami.github.io/irl-player-installer-linux/
+**Website / help guide:** https://linux-player.theirlnetwork.com/
 
 ## Install (one line, run on the device)
 
 ```bash
-curl -fsSL https://mazyargholami.github.io/irl-player-installer-linux/install.sh | sudo bash
+curl -fsSL https://linux-player.theirlnetwork.com/install.sh | sudo bash
 ```
 
 The installer detects the device and architecture and picks the right package
@@ -37,10 +37,10 @@ The deploy workflow publishes the repo to **GitHub Pages** on every push to
 `main`. The Pages site serves everything users need:
 
 ```
-https://mazyargholami.github.io/irl-player-installer-linux/            ← website / guide
-https://mazyargholami.github.io/irl-player-installer-linux/install.sh  ← installer
-https://mazyargholami.github.io/irl-player-installer-linux/uninstall.sh
-https://mazyargholami.github.io/irl-player-installer-linux/packages/…  ← .deb packages
+https://linux-player.theirlnetwork.com/            ← website / guide
+https://linux-player.theirlnetwork.com/install.sh  ← installer
+https://linux-player.theirlnetwork.com/uninstall.sh
+https://linux-player.theirlnetwork.com/packages/…  ← .deb packages
 ```
 
 One-time setup after pushing to GitHub:
@@ -56,26 +56,23 @@ the website, copy the install command, and run it — nothing else to host.
 > **Note:** Pages on a free GitHub account requires the repo to be
 > **public**. (Private repo + Pages needs GitHub Pro / Team.)
 
-## Custom domain (optional, free)
+## Custom domain
 
-GitHub Pages custom domains cost nothing — GitHub also issues a free HTTPS
-certificate automatically. You only pay for the domain itself at your
-registrar.
+The site is served on **`linux-player.theirlnetwork.com`** — a free GitHub
+Pages custom domain (GitHub also issues the HTTPS certificate for free).
+This is how it is configured:
 
-1. At your DNS provider, add a record pointing at GitHub Pages:
-   - **Subdomain** (e.g. `player.example.com`) — add a `CNAME` record:
-     `player` → `mazyargholami.github.io`
-   - **Apex domain** (e.g. `example.com`) — add `A` records to
-     `185.199.108.153`, `185.199.109.153`, `185.199.110.153`,
-     `185.199.111.153`
-2. On GitHub: **Settings → Pages → Custom domain** → enter the domain and
-   save. Wait for the DNS check to pass, then tick **Enforce HTTPS**
-   (appears once the certificate is issued, usually within minutes).
-3. Update the URLs to the new domain in `BASE_URL` in `install.sh` and in
-   the install commands in `index.html` and this README, then push.
+1. DNS (at the `theirlnetwork.com` DNS provider): a `CNAME` record
+   `linux-player` → `mazyargholami.github.io`
+2. On GitHub: **Settings → Pages → Custom domain** → enter
+   `linux-player.theirlnetwork.com` and save. Wait for the DNS check to
+   pass, then tick **Enforce HTTPS** (appears once the certificate is
+   issued, usually within minutes).
 
-The old `mazyargholami.github.io/...` URLs keep working — GitHub redirects
-them to the custom domain — so already-deployed devices are not affected.
+All URLs in `install.sh`, `index.html` and this README use the custom
+domain. The old `mazyargholami.github.io/irl-player-installer-linux/...`
+URLs keep working — GitHub redirects them to the custom domain — so
+devices installed before the switch are unaffected.
 
 ## Releasing a new version
 
@@ -148,7 +145,7 @@ sudo irl-kiosk-toggle                     # same as pressing Ctrl+Alt+P
 ## Uninstall
 
 ```bash
-curl -fsSL https://mazyargholami.github.io/irl-player-installer-linux/uninstall.sh | sudo bash
+curl -fsSL https://linux-player.theirlnetwork.com/uninstall.sh | sudo bash
 ```
 
 Removes the services, the hotkey, the package and the kiosk user. If the
