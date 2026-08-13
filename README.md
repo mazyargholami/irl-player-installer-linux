@@ -162,7 +162,8 @@ device originally booted to a desktop, re-enable it with
 - **No audio** — the service runs outside a desktop session, so audio goes
   through ALSA directly. On a Pi, pick the output via `sudo raspi-config` →
   System Options → Audio.
-- **Mouse cursor visible** — the cursor only renders when a pointer device is
-  attached and moved; unplug the mouse on deployed screens.
+- **Mouse cursor or app title bar visible** — fixed by re-running the
+  installer: the cursor is hidden with a transparent cursor theme, and the
+  app runs on the X11 backend where it draws no title bar.
 - **Locked out with no keyboard** — SSH in and
   `sudo systemctl stop irl-player-kiosk`, or power-cycle; it recovers cleanly.

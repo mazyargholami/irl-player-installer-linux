@@ -258,8 +258,8 @@
       The most common cause is a 32-bit OS image; the player needs Raspberry Pi OS <em>64-bit</em>.</li>
     <li><strong>No audio</strong> — the kiosk runs outside a desktop session, so sound goes through ALSA
       directly. Pick the right output in <code style="font-family: ui-monospace, Menlo, monospace;">sudo raspi-config</code> → System Options → Audio.</li>
-    <li><strong>Mouse cursor on screen</strong> — the cursor only appears when a pointer is moved;
-      unplug the mouse on deployed screens.</li>
+    <li><strong>Mouse cursor or title bar on screen</strong> — re-run the install command;
+      current versions hide the cursor with a transparent theme and run the app borderless.</li>
     <li><strong>Stuck and no keyboard?</strong> — SSH in and run
       <code style="font-family: ui-monospace, Menlo, monospace;">sudo systemctl stop irl-player-kiosk</code>, or power-cycle the Pi; it recovers cleanly.</li>
   </ul>

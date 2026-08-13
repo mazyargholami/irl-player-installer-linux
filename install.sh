@@ -65,6 +65,8 @@ log "Installing packages (cage kiosk compositor + deps)..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq cage xwayland curl ca-certificates python3-evdev
+# transparent cursor theme = invisible mouse pointer in kiosk mode
+apt-get install -y -qq xcursor-transparent-theme || log "xcursor-transparent-theme unavailable; cursor may be visible"
 
 # --- 3. Get and install the .deb --------------------------------------------
 # If a local copy sits next to this script (repo checkout), use it;
@@ -110,6 +112,11 @@ if [ -n "$CMDLINE" ] && ! grep -q 'consoleblank=' "$CMDLINE"; then
 fi
 
 # --- 7. systemd kiosk service -------------------------------------------------
+# Resolve the transparent cursor theme's directory name (if installed)
+CURSOR_THEME="default"
+CURSOR_DIR="$(find /usr/share/icons -maxdepth 2 -name cursors -path '*transparent*' -print -quit 2>/dev/null || true)"
+[ -n "$CURSOR_DIR" ] && CURSOR_THEME="$(basename "$(dirname "$CURSOR_DIR")")"
+
 log "Writing /etc/systemd/system/$SERVICE_NAME.service ..."
 cat > "/etc/systemd/system/$SERVICE_NAME.service" <<EOF
 [Unit]
@@ -132,7 +139,12 @@ StandardOutput=journal
 StandardError=journal
 UtmpIdentifier=tty1
 UtmpMode=user
-Environment=GDK_BACKEND=wayland,x11
+# X11 backend (via Xwayland): the Flutter runner drops its GTK title bar
+# on X11 with a non-GNOME WM, so the app is a clean borderless fullscreen
+Environment=GDK_BACKEND=x11
+# invisible cursor (transparent theme) for both the compositor and the app
+Environment=XCURSOR_THEME=$CURSOR_THEME
+Environment=XCURSOR_SIZE=24
 ExecStart=/usr/bin/cage -d -- $APP_BIN
 Restart=always
 RestartSec=3
