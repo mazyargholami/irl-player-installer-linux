@@ -1,0 +1,290 @@
+<title>IRL Player — Raspberry Pi Kiosk Guide</title>
+<style>
+  :root {
+    --paper: #FAF7F8;
+    --ink: #221C26;
+    --muted: #6E6472;
+    --line: #E6DEE2;
+    --accent: #C7053D;
+    --accent-ink: #C7053D;
+    --card: #FFFFFF;
+    --term-bg: #16111A;
+    --term-ink: #EDE6EF;
+    --term-prompt: #3FD97F;
+    --term-comment: #8A7E90;
+    --kbd-bg: #F1EAEE;
+    --kbd-line: #D8CDD4;
+    --ok: #1E8A50;
+  }
+  :root:not([data-theme="light"]) { color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #171219;
+      --ink: #EFE8F0;
+      --muted: #A2949F;
+      --line: #322A36;
+      --accent: #C7053D;
+      --accent-ink: #FF5C87;
+      --card: #1F1822;
+      --term-bg: #100C13;
+      --term-ink: #EDE6EF;
+      --term-prompt: #3FD97F;
+      --term-comment: #7D7286;
+      --kbd-bg: #2A2230;
+      --kbd-line: #453A4B;
+      --ok: #45C97E;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #171219;
+    --ink: #EFE8F0;
+    --muted: #A2949F;
+    --line: #322A36;
+    --accent: #C7053D;
+    --accent-ink: #FF5C87;
+    --card: #1F1822;
+    --term-bg: #100C13;
+    --term-ink: #EDE6EF;
+    --term-prompt: #3FD97F;
+    --term-comment: #7D7286;
+    --kbd-bg: #2A2230;
+    --kbd-line: #453A4B;
+    --ok: #45C97E;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  .wrap { max-width: 700px; margin: 0 auto; padding: 3.5rem 1.25rem 5rem; }
+
+  .eyebrow {
+    color: var(--accent-ink);
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    margin: 0 0 0.75rem;
+  }
+  h1 {
+    font-size: clamp(2rem, 6vw, 2.75rem);
+    line-height: 1.1;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    margin: 0 0 1rem;
+    text-wrap: balance;
+  }
+  .lede { color: var(--muted); font-size: 1.075rem; margin: 0 0 2.5rem; max-width: 58ch; }
+
+  h2 {
+    font-size: 1.35rem;
+    font-weight: 750;
+    letter-spacing: -0.01em;
+    margin: 3rem 0 0.75rem;
+    padding-top: 2.25rem;
+    border-top: 1px solid var(--line);
+    text-wrap: balance;
+  }
+  h2:first-of-type { border-top: 0; padding-top: 0; }
+  p { margin: 0.75rem 0; max-width: 62ch; }
+  .note { color: var(--muted); font-size: 0.925rem; }
+  a { color: var(--accent-ink); }
+
+  /* terminal blocks — dark in both themes, like a real shell */
+  .term {
+    background: var(--term-bg);
+    color: var(--term-ink);
+    border-radius: 10px;
+    padding: 1rem 1.1rem;
+    margin: 1rem 0;
+    position: relative;
+    overflow-x: auto;
+    font: 0.85rem/1.7 ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  .term code { display: block; white-space: pre; padding-right: 4.5rem; }
+  .term .p { color: var(--term-prompt); user-select: none; }
+  .term .c { color: var(--term-comment); }
+  .copy {
+    position: absolute; top: 0.6rem; right: 0.6rem;
+    background: rgba(255,255,255,0.08);
+    color: var(--term-ink);
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 6px;
+    font: 600 0.72rem/1 inherit;
+    font-family: inherit;
+    padding: 0.45rem 0.65rem;
+    cursor: pointer;
+  }
+  .copy:hover { background: rgba(255,255,255,0.16); }
+  .copy:focus-visible { outline: 2px solid var(--term-prompt); outline-offset: 2px; }
+  .copy.done { color: var(--term-prompt); border-color: var(--term-prompt); }
+
+  /* install steps — a real sequence, so numbers carry meaning */
+  ol.steps { margin: 1.25rem 0; padding: 0; list-style: none; counter-reset: step; display: grid; gap: 0.9rem; }
+  ol.steps li { counter-increment: step; display: grid; grid-template-columns: 2rem 1fr; gap: 0.75rem; }
+  ol.steps li::before {
+    content: counter(step);
+    width: 1.7rem; height: 1.7rem;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 700; font-size: 0.85rem;
+    display: flex; align-items: center; justify-content: center;
+    margin-top: 0.15rem;
+  }
+
+  kbd {
+    background: var(--kbd-bg);
+    border: 1px solid var(--kbd-line);
+    border-bottom-width: 2px;
+    border-radius: 6px;
+    padding: 0.1rem 0.45rem;
+    font: 600 0.85em ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.925rem; }
+  th, td { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+  td code { font: 0.85em ui-monospace, "SF Mono", Menlo, Consolas, monospace; background: var(--kbd-bg); padding: 0.1rem 0.35rem; border-radius: 4px; white-space: nowrap; }
+  .tablewrap { overflow-x: auto; }
+
+  ul { padding-left: 1.2rem; }
+  li { margin: 0.4rem 0; }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 0.4rem;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 0.3rem 0.85rem;
+    font-size: 0.8rem; font-weight: 600;
+    color: var(--muted);
+    margin: 0 0.35rem 0.5rem 0;
+  }
+  .pill .dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--ok); }
+
+  footer { margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.85rem; }
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">IRL Network · Screen Player</p>
+  <h1>Turn a Raspberry Pi into a dedicated IRL&nbsp;Player screen</h1>
+  <p class="lede">
+    One command installs the player and locks it fullscreen on the top layer.
+    No desktop, no notifications, no screensaver — the app boots straight to
+    the screen and restarts itself if it ever crashes.
+  </p>
+
+  <span class="pill"><span class="dot"></span>Raspberry Pi 3 / 4 / 5 / Zero 2 W</span>
+  <span class="pill"><span class="dot"></span>Raspberry Pi OS 64-bit (Lite or Desktop)</span>
+  <span class="pill"><span class="dot"></span>Internet during install</span>
+
+  <h2 id="install">Install</h2>
+  <ol class="steps">
+    <li><div>Flash <strong>Raspberry Pi OS 64-bit</strong> with Raspberry Pi Imager and boot the Pi. Lite is enough — no desktop needed.</div></li>
+    <li><div>Open a terminal on the Pi (or SSH into it) and run:
+      <div class="term"><button class="copy" type="button">Copy</button><code><span class="p">$</span> curl -fsSL https://mazyargholami.github.io/irl-player-installer-linux/install.sh | sudo bash</code></div>
+    </div></li>
+    <li><div>That's it. The player starts fullscreen right away and on every boot from now on.</div></li>
+  </ol>
+  <p class="note">
+    The installer checks it is really running on a Raspberry Pi with a 64-bit
+    OS before touching anything, then installs the player package, the kiosk
+    compositor, and the boot service.
+  </p>
+
+  <h2 id="hotkey">On top ↔ normal: the hotkey</h2>
+  <p>
+    The player is <strong>on top by default</strong> — at boot and after
+    install. With a keyboard plugged into the Pi:
+  </p>
+  <p>
+    <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>P</kbd> — switch between kiosk
+    mode (fullscreen, on top) and the normal layer (console login, or the
+    desktop if one is installed). Press it again to put the player back on top.
+  </p>
+  <p class="note">
+    The hotkey reads raw keyboard input, so it works no matter what is on
+    screen. Without a keyboard attached, nothing can interrupt the player.
+  </p>
+
+  <h2 id="manage">Manage the player</h2>
+  <p>From a terminal or over SSH:</p>
+  <div class="term"><button class="copy" type="button">Copy</button><code><span class="c"># is it running?</span>
+<span class="p">$</span> sudo systemctl status irl-player-kiosk
+
+<span class="c"># watch live logs</span>
+<span class="p">$</span> journalctl -u irl-player-kiosk -f
+
+<span class="c"># restart the app</span>
+<span class="p">$</span> sudo systemctl restart irl-player-kiosk
+
+<span class="c"># stop until next boot</span>
+<span class="p">$</span> sudo systemctl stop irl-player-kiosk
+
+<span class="c"># same as pressing Ctrl+Alt+P</span>
+<span class="p">$</span> sudo irl-kiosk-toggle</code></div>
+
+  <h2 id="uninstall">Uninstall</h2>
+  <p>Removes the service, the hotkey, the package, and the kiosk user:</p>
+  <div class="term"><button class="copy" type="button">Copy</button><code><span class="p">$</span> curl -fsSL https://mazyargholami.github.io/irl-player-installer-linux/uninstall.sh | sudo bash</code></div>
+  <p class="note">
+    If the Pi originally booted to a desktop, bring it back afterwards with
+    <code style="font-family: ui-monospace, Menlo, monospace;">sudo systemctl enable --now lightdm</code>.
+  </p>
+
+  <h2 id="how">How it works</h2>
+  <div class="tablewrap">
+  <table>
+    <tr><th>Piece</th><th>What it does</th></tr>
+    <tr><td><code>irl-player.deb</code></td><td>The player app, installed to <code>/opt/irl-player</code> with its dependencies via apt.</td></tr>
+    <tr><td><code>cage</code></td><td>A kiosk compositor that runs exactly one app, maximized, permanently on top. There is no desktop underneath — no window can ever cover the player.</td></tr>
+    <tr><td><code>irl-player-kiosk</code></td><td>systemd service that boots straight into the player on tty1 as an unprivileged user and restarts it within 3 seconds if it crashes.</td></tr>
+    <tr><td><code>irl-player-hotkey</code></td><td>Small background service that listens for <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>P</kbd> and toggles the layer.</td></tr>
+  </table>
+  </div>
+  <p>
+    Screen blanking is disabled at install, and there is no screensaver or
+    lock screen in the kiosk environment — the display stays on 24/7.
+  </p>
+
+  <h2 id="trouble">Troubleshooting</h2>
+  <ul>
+    <li><strong>Black screen after install</strong> — check the logs:
+      <code style="font-family: ui-monospace, Menlo, monospace;">journalctl -u irl-player-kiosk -e</code>.
+      The most common cause is a 32-bit OS image; the player needs Raspberry Pi OS <em>64-bit</em>.</li>
+    <li><strong>No audio</strong> — the kiosk runs outside a desktop session, so sound goes through ALSA
+      directly. Pick the right output in <code style="font-family: ui-monospace, Menlo, monospace;">sudo raspi-config</code> → System Options → Audio.</li>
+    <li><strong>Mouse cursor on screen</strong> — the cursor only appears when a pointer is moved;
+      unplug the mouse on deployed screens.</li>
+    <li><strong>Stuck and no keyboard?</strong> — SSH in and run
+      <code style="font-family: ui-monospace, Menlo, monospace;">sudo systemctl stop irl-player-kiosk</code>, or power-cycle the Pi; it recovers cleanly.</li>
+  </ul>
+
+  <footer>
+    IRL Player · install scripts &amp; guide —
+    <a href="https://github.com/mazyargholami/irl-player-installer-linux">github.com/mazyargholami/irl-player-installer-linux</a>
+  </footer>
+</div>
+
+<script>
+  document.querySelectorAll('.copy').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var code = btn.parentElement.querySelector('code');
+      var lines = code.innerText.split('\n')
+        .map(function (l) { return l.replace(/^\$\s?/, ''); })
+        .filter(function (l) { return l.trim() && !l.trim().startsWith('#'); });
+      navigator.clipboard.writeText(lines.join('\n')).then(function () {
+        btn.textContent = 'Copied';
+        btn.classList.add('done');
+        setTimeout(function () {
+          btn.textContent = 'Copy';
+          btn.classList.remove('done');
+        }, 1600);
+      });
+    });
+  });
+</script>
