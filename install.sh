@@ -31,8 +31,13 @@ KIOSK_USER="irlplayer"
 SERVICE_NAME="irl-player-kiosk"
 # -------------------------------------------------------------
 
+# Bumped on every change to this script — shown at start of every run
+INSTALLER_REV=4
+
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+log "Installer revision $INSTALLER_REV (app $VERSION)"
 
 [ "$(id -u)" -eq 0 ] || die "must run as root — use: curl -fsSL $BASE_URL/install.sh | sudo bash"
 
