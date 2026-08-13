@@ -1,7 +1,21 @@
 <meta charset="utf-8">
 <title>IRL Player for Linux — Setup Guide</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='2' y='8' width='60' height='40' rx='7' fill='%23C7053D'/%3E%3Cpolygon points='26,18 46,28 26,38' fill='white'/%3E%3Crect x='20' y='52' width='24' height='5' rx='2.5' fill='%23C7053D'/%3E%3C/svg%3E">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Turn any screen into a dedicated IRL Network player. One command installs it — it runs itself.">
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="apple-touch-icon" href="/apple-icon-180.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="IRL Network">
+<meta property="og:title" content="IRL Player for Linux">
+<meta property="og:description" content="Turn any screen into a dedicated IRL Network player. One command installs it — it runs itself.">
+<meta property="og:url" content="https://linux-player.theirlnetwork.com/">
+<meta property="og:image" content="https://linux-player.theirlnetwork.com/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="IRL Player for Linux">
+<meta name="twitter:description" content="Turn any screen into a dedicated IRL Network player. One command installs it — it runs itself.">
+<meta name="twitter:image" content="https://linux-player.theirlnetwork.com/og-image.png">
 <style>
   :root {
     --paper: #FAF7F8;
@@ -59,7 +73,15 @@
   }
 
   * { box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
+  html { scroll-behavior: smooth; scrollbar-width: thin; scrollbar-color: var(--kbd-line) transparent; }
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--kbd-line);
+    border-radius: 99px;
+    border: 3px solid var(--paper);
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
   body {
     margin: 0;
     background: var(--paper);
@@ -460,7 +482,7 @@
 
   <footer>
     <span>IRL Player for Linux · IRL Network</span>
-    <span>Guide version 7 · installer revision 6</span>
+    <span>Guide version 8 · installer revision 6</span>
   </footer>
 </div>
 
