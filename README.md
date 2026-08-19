@@ -162,6 +162,30 @@ curl -fsSL https://YOUR_SERVER/irl-player/install.sh | sudo IRL_BASE_URL=https:/
      layer-toggle hotkey.
    - `irl-player-update.timer` checks the published `install.sh` hourly and
      reinstalls when it changes (see [Auto-update](#auto-update)).
+   - `irl-player-watchdog.service` self-heals freezes (see
+     [Self-healing](#self-healing)).
+
+## Self-healing
+
+Crashes were always covered (`Restart=always` brings the app back in 3
+seconds). The watchdog adds coverage for **freezes** — process alive, picture
+stuck:
+
+1. Every 30 s it grabs a tiny screenshot (`grim`, as the kiosk user) and
+   hashes it. Playing video always changes pixels, so a screen that is
+   pixel-identical for **5 minutes** means the player is frozen.
+2. First response: restart `irl-player-kiosk` (up to 3 times). The restart
+   counter only clears after the screen has been changing again for a full
+   5 minutes, so a brief flicker between re-freezes doesn't reset the ladder.
+3. If 3 restarts didn't help: **reboot the device** — at most once every
+   2 hours (timestamp in `/var/lib/irl-player/last-watchdog-reboot`).
+4. A hardware watchdog (`RuntimeWatchdogSec=15` — the Pi's built-in watchdog
+   chip) force-reboots the device if the whole OS ever locks up.
+
+If the screen can't be captured (no `grim`, no Wayland socket), the watchdog
+does nothing — it never acts on a guess. When the kiosk is intentionally
+stopped (Ctrl+Alt+P, manual stop) it stands down. Every action it takes is
+logged: `journalctl -u irl-player-watchdog`.
 
 ## Hotkey: on top ↔ normal
 

@@ -19,6 +19,9 @@
 #   5. Disables console blanking and any desktop display manager
 #   6. Sets up auto-update: the device re-fetches this script on boot and
 #      every hour, and reinstalls whenever the published script changes
+#   7. Installs a freeze watchdog: if the screen stops changing the player
+#      is restarted, then the device rebooted; a hardware watchdog reboots
+#      the Pi if the whole OS ever locks up
 #
 set -euo pipefail
 
@@ -42,15 +45,18 @@ MANAGED_FILES="
 /etc/systemd/system/irl-player-hotkey.service
 /etc/systemd/system/irl-player-update.service
 /etc/systemd/system/irl-player-update.timer
+/etc/systemd/system/irl-player-watchdog.service
+/etc/systemd/system.conf.d/irl-watchdog.conf
 /usr/local/bin/irl-kiosk-run
 /usr/local/bin/irl-kiosk-toggle
 /usr/local/bin/irl-hotkeyd
 /usr/local/bin/irl-update
+/usr/local/bin/irl-watchdog
 "
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=8
+INSTALLER_REV=9
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -91,6 +97,8 @@ apt-get install -y -qq cage xwayland curl ca-certificates python3-evdev
 # transparent cursor theme + X-level cursor hiding = invisible mouse pointer
 apt-get install -y -qq xcursor-transparent-theme || log "xcursor-transparent-theme unavailable"
 apt-get install -y -qq unclutter-xfixes || apt-get install -y -qq unclutter || log "unclutter unavailable; cursor may be visible"
+# grim takes the tiny screenshots the freeze watchdog compares
+apt-get install -y -qq grim || log "grim unavailable; freeze watchdog will stay idle"
 
 # --- 3. Get and install the .deb --------------------------------------------
 # If a local copy sits next to this script (repo checkout), use it;
@@ -320,7 +328,132 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
-# --- 9. Auto-update: reinstall whenever the published install.sh changes ------
+# --- 9. Freeze watchdog: self-heal when the screen stops changing -------------
+# systemd already restarts the app if it CRASHES; this catches FREEZES,
+# where the process is alive but the picture is stuck. Every 30s it takes a
+# tiny screenshot and hashes it — playing video always changes pixels, so a
+# screen that is pixel-identical for 5 minutes means the player is frozen.
+# Escalation: restart the player (up to 3 times), then reboot the device
+# (at most once every 2 hours). If the screen can't be captured, it does
+# nothing — it never acts on a guess.
+log "Installing freeze watchdog ..."
+
+cat > /usr/local/bin/irl-watchdog <<'EOF'
+#!/usr/bin/env bash
+# IRL Player freeze watchdog. See install.sh for the design.
+set -u
+SERVICE=irl-player-kiosk
+KIOSK_USER=irlplayer
+STATE_DIR=/var/lib/irl-player
+INTERVAL=30        # seconds between screen checks
+FREEZE_AFTER=300   # unchanged screen for this long = frozen
+GRACE=120          # after acting, give the player this long to come back
+MAX_RESTARTS=3     # restarts before escalating to a reboot
+REBOOT_BACKOFF=7200  # never watchdog-reboot more than once per 2 hours
+
+mkdir -p "$STATE_DIR"
+
+# Hash of the current screen, captured as the kiosk user via grim.
+# Fails (returns 1) rather than guessing when the screen can't be read.
+capture() {
+  local uid xdg sock tmp
+  command -v grim >/dev/null 2>&1 || return 1
+  uid="$(id -u "$KIOSK_USER" 2>/dev/null)" || return 1
+  xdg="/run/user/$uid"
+  sock="$(find "$xdg" -maxdepth 1 -name 'wayland-*' ! -name '*.lock' 2>/dev/null | head -1)"
+  [ -n "$sock" ] || return 1
+  tmp="$(mktemp)"
+  if XDG_RUNTIME_DIR="$xdg" WAYLAND_DISPLAY="${sock##*/}" \
+       runuser -u "$KIOSK_USER" -- grim -t ppm -s 0.125 - > "$tmp" 2>/dev/null \
+     && [ -s "$tmp" ]; then
+    sha256sum "$tmp" | awk '{print $1}'
+    rm -f "$tmp"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
+last_hash=""
+static_for=0
+healthy_for=0
+restarts=0
+grace_until=0
+
+while true; do
+  sleep "$INTERVAL"
+  now="$(date +%s)"
+
+  # kiosk intentionally off (Ctrl+Alt+P, manual stop): not our business
+  if ! systemctl is-active --quiet "$SERVICE"; then
+    last_hash=""; static_for=0; healthy_for=0; restarts=0
+    continue
+  fi
+  [ "$now" -lt "$grace_until" ] && continue
+
+  h="$(capture)" || continue
+
+  if [ "$h" != "$last_hash" ]; then
+    last_hash="$h"; static_for=0
+    # only a sustained healthy screen clears the escalation counter —
+    # a brief flicker right after a restart must not reset it
+    healthy_for=$((healthy_for + INTERVAL))
+    [ "$healthy_for" -ge "$FREEZE_AFTER" ] && restarts=0
+    continue
+  fi
+
+  healthy_for=0
+  static_for=$((static_for + INTERVAL))
+  [ "$static_for" -lt "$FREEZE_AFTER" ] && continue
+
+  if [ "$restarts" -lt "$MAX_RESTARTS" ]; then
+    restarts=$((restarts + 1))
+    echo "screen unchanged for ${static_for}s — restarting $SERVICE (attempt $restarts/$MAX_RESTARTS)"
+    systemctl restart "$SERVICE"
+  else
+    last_reboot="$(cat "$STATE_DIR/last-watchdog-reboot" 2>/dev/null || echo 0)"
+    if [ $((now - last_reboot)) -ge "$REBOOT_BACKOFF" ]; then
+      echo "still frozen after $MAX_RESTARTS restarts — rebooting device"
+      echo "$now" > "$STATE_DIR/last-watchdog-reboot"
+      sync
+      reboot
+    else
+      echo "still frozen but rebooted recently — retrying a service restart"
+      systemctl restart "$SERVICE"
+    fi
+  fi
+  static_for=0
+  grace_until=$((now + GRACE))
+done
+EOF
+chmod +x /usr/local/bin/irl-watchdog
+
+cat > /etc/systemd/system/irl-player-watchdog.service <<'EOF'
+[Unit]
+Description=IRL Player freeze watchdog (restarts the player if the screen stops changing)
+After=multi-user.target
+
+[Service]
+ExecStart=/usr/local/bin/irl-watchdog
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Hardware watchdog: the Pi's watchdog chip force-reboots the device if the
+# whole OS freezes (the case no software watchdog can catch). systemd pets
+# the chip; if systemd itself stops responding for 15s, the chip fires.
+mkdir -p /etc/systemd/system.conf.d
+cat > /etc/systemd/system.conf.d/irl-watchdog.conf <<'EOF'
+[Manager]
+RuntimeWatchdogSec=15
+RebootWatchdogSec=2min
+EOF
+systemctl daemon-reexec 2>/dev/null || true
+
+# --- 10. Auto-update: reinstall whenever the published install.sh changes -----
 # The device fetches $BASE_URL/install.sh on boot and every hour, compares
 # its hash to the one recorded at install time, and re-runs the script if it
 # changed. Any edit to the script (new app version, config fix, ...) rolls
@@ -412,7 +545,7 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-# --- 10. Remove leftovers from previous installs ------------------------------
+# --- 11. Remove leftovers from previous installs ------------------------------
 # Anything the previous install created that this version of the script no
 # longer ships (see MANAGED_FILES) gets disabled and deleted here, so
 # services/helpers deleted from this script disappear from every device.
@@ -437,12 +570,14 @@ systemctl set-default graphical.target >/dev/null
 systemctl enable "$SERVICE_NAME" >/dev/null
 systemctl enable --now irl-player-hotkey >/dev/null
 systemctl enable --now irl-player-update.timer >/dev/null
+systemctl enable --now irl-player-watchdog >/dev/null
 
 log "Starting kiosk ..."
 systemctl restart "$SERVICE_NAME"
 
 log "Done. IRL Player will start fullscreen on every boot."
 log "Auto-update: checks $BASE_URL/install.sh hourly and reinstalls on change"
+log "Watchdog: frozen screen -> player restart, then reboot; OS hang -> hardware reboot"
 log "Hotkey:  Ctrl+Alt+P toggles kiosk (on top) <-> normal console/desktop"
 log "Logs:    journalctl -u $SERVICE_NAME -f"
 log "Stop:    sudo systemctl stop $SERVICE_NAME"
