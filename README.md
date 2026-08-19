@@ -162,7 +162,8 @@ curl -fsSL https://YOUR_SERVER/irl-player/install.sh | sudo IRL_BASE_URL=https:/
      layer-toggle hotkey.
    - `irl-player-update.timer` checks the published `install.sh` hourly and
      reinstalls when it changes (see [Auto-update](#auto-update)).
-   - `irl-player-watchdog.service` self-heals freezes (see
+   - `irl-player-watchdog.service` self-heals freezes and
+     `irl-player-netwatch.service` self-heals a dead connection (see
      [Self-healing](#self-healing)).
 
 ## Self-healing
@@ -186,6 +187,39 @@ If the screen can't be captured (no `grim`, no Wayland socket), the watchdog
 does nothing — it never acts on a guess. When the kiosk is intentionally
 stopped (Ctrl+Alt+P, manual stop) it stands down. Every action it takes is
 logged: `journalctl -u irl-player-watchdog`.
+
+A second watchdog covers a stuck **connection** (`irl-player-netwatch`):
+10 minutes with no internet → restart networking (NetworkManager, dhcpcd,
+or a raw Wi-Fi interface bounce); 30 minutes → reboot the device (only while
+the kiosk is running, at most once every 2 hours). Logs:
+`journalctl -u irl-player-netwatch`.
+
+The OS underneath stays patched too: `unattended-upgrades` applies security
+updates via the standard apt-daily timers (no automatic reboots), with
+`irl-player` blacklisted so app versions are controlled exclusively by
+`irl-update`.
+
+## Canary rollout
+
+New releases don't hit the whole fleet at once:
+
+- A device marked with `sudo touch /etc/irl-player/canary` (e.g. the one on
+  your desk) applies every new `install.sh` **immediately** on its next
+  hourly check.
+- Every other device notes the new version and waits `FLEET_DELAY_HOURS`
+  (default 24, set at the top of `install.sh`) before applying it. If the
+  published script changes again during the wait — e.g. you pushed a fix —
+  the clock restarts on the new version.
+- **Urgent fix for everyone right now:** publish the fix with
+  `FLEET_DELAY_HOURS=0`. Devices read the value from the *new* script, so
+  the whole fleet applies it on the next check. (Set it back to 24 in the
+  release after.)
+
+## Continuous integration
+
+`.github/workflows/tests.yml` runs the full e2e suite on every PR and every
+push to `main` — a change that breaks the installer can't be merged without
+a red ❌ first.
 
 ## Hotkey: on top ↔ normal
 

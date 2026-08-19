@@ -22,6 +22,11 @@
 #   7. Installs a freeze watchdog: if the screen stops changing the player
 #      is restarted, then the device rebooted; a hardware watchdog reboots
 #      the Pi if the whole OS ever locks up
+#   8. Enables unattended OS security updates and a network watchdog that
+#      repairs a dead connection (restart networking, then reboot)
+#   9. Canary rollout: `sudo touch /etc/irl-player/canary` marks a device to
+#      take every update immediately; all others follow FLEET_DELAY_HOURS
+#      later
 #
 set -euo pipefail
 
@@ -34,6 +39,12 @@ SUPPORTED_ARCHS="arm64"
 APP_BIN="/opt/irl-player/IRLPlayer"
 KIOSK_USER="irlplayer"
 SERVICE_NAME="irl-player-kiosk"
+# Canary rollout: devices WITHOUT /etc/irl-player/canary wait this many hours
+# after a new install.sh appears before applying it; a device marked with
+# `sudo touch /etc/irl-player/canary` applies immediately. Devices read this
+# value from the NEW script, so publishing an urgent fix with 0 here makes
+# the whole fleet apply it right away.
+FLEET_DELAY_HOURS=24
 # Every file this installer creates on the device (one per line). Used for
 # cleanup: anything listed in the previous install's manifest but no longer
 # listed here is disabled and deleted on the next run — so removing a
@@ -46,17 +57,21 @@ MANAGED_FILES="
 /etc/systemd/system/irl-player-update.service
 /etc/systemd/system/irl-player-update.timer
 /etc/systemd/system/irl-player-watchdog.service
+/etc/systemd/system/irl-player-netwatch.service
 /etc/systemd/system.conf.d/irl-watchdog.conf
+/etc/apt/apt.conf.d/52irl-unattended-upgrades
+/etc/apt/apt.conf.d/60irl-auto-upgrades
 /usr/local/bin/irl-kiosk-run
 /usr/local/bin/irl-kiosk-toggle
 /usr/local/bin/irl-hotkeyd
 /usr/local/bin/irl-update
 /usr/local/bin/irl-watchdog
+/usr/local/bin/irl-netwatch
 "
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=10
+INSTALLER_REV=11
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -453,7 +468,121 @@ RebootWatchdogSec=2min
 EOF
 systemctl daemon-reexec 2>/dev/null || true
 
-# --- 10. Auto-update: reinstall whenever the published install.sh changes -----
+# --- 10. Unattended OS security updates ---------------------------------------
+# The player updates itself via irl-update; this keeps the OS underneath
+# patched too. Runs via Debian's standard apt-daily timers (early morning,
+# randomized). No automatic reboots — kernel updates apply whenever the
+# device next reboots anyway. irl-player itself is blacklisted so app
+# versions stay controlled exclusively by this script.
+log "Enabling unattended OS security updates ..."
+apt-get install -y -qq unattended-upgrades || log "unattended-upgrades unavailable"
+mkdir -p /etc/apt/apt.conf.d
+
+cat > /etc/apt/apt.conf.d/52irl-unattended-upgrades <<'EOF'
+// Installed by the irl-player installer — OS security updates only.
+Unattended-Upgrade::Origins-Pattern {
+        "origin=Debian,codename=${distro_codename},label=Debian-Security";
+        "origin=Raspbian,codename=${distro_codename}";
+        "origin=Raspberry Pi Foundation,codename=${distro_codename}";
+};
+// the player app is managed exclusively by irl-update, never by apt upgrades
+Unattended-Upgrade::Package-Blacklist { "irl-player"; };
+Unattended-Upgrade::Automatic-Reboot "false";
+EOF
+
+cat > /etc/apt/apt.conf.d/60irl-auto-upgrades <<'EOF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+EOF
+systemctl enable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+
+# --- 11. Network watchdog: self-heal a dead connection ------------------------
+# The freeze watchdog covers a stuck PICTURE; this covers a stuck CONNECTION
+# (router rebooted, Wi-Fi dropped and never rejoined). 10 minutes with no
+# internet -> restart networking; 30 minutes -> reboot the device (only when
+# the kiosk is running, at most once every 2 hours).
+log "Installing network watchdog ..."
+
+cat > /usr/local/bin/irl-netwatch <<'EOF'
+#!/usr/bin/env bash
+# IRL Player network watchdog. See install.sh for the design.
+set -u
+SERVICE=irl-player-kiosk
+STATE_DIR=/var/lib/irl-player
+INTERVAL=60             # seconds between connectivity checks
+RESTART_NET_AFTER=600   # offline this long -> restart networking
+REBOOT_AFTER=1800       # offline this long -> reboot (kiosk running only)
+REBOOT_BACKOFF=7200     # never netwatch-reboot more than once per 2 hours
+
+online() {
+  ping -c1 -W5 1.1.1.1 >/dev/null 2>&1 && return 0
+  ping -c1 -W5 8.8.8.8 >/dev/null 2>&1 && return 0
+  curl -fsm 10 -o /dev/null https://linux-player.theirlnetwork.com/ 2>/dev/null
+}
+
+restart_networking() {
+  if systemctl is-active --quiet NetworkManager; then
+    systemctl restart NetworkManager
+  elif systemctl is-active --quiet dhcpcd; then
+    systemctl restart dhcpcd
+  else
+    local i d
+    for i in /sys/class/net/wl*; do
+      [ -e "$i" ] || continue
+      d="${i##*/}"
+      ip link set "$d" down 2>/dev/null
+      ip link set "$d" up 2>/dev/null
+    done
+  fi
+}
+
+offline_for=0
+net_restarted=0
+
+while true; do
+  sleep "$INTERVAL"
+  if online; then
+    offline_for=0
+    net_restarted=0
+    continue
+  fi
+  offline_for=$((offline_for + INTERVAL))
+  if [ "$net_restarted" -eq 0 ] && [ "$offline_for" -ge "$RESTART_NET_AFTER" ]; then
+    echo "offline for ${offline_for}s — restarting networking"
+    restart_networking
+    net_restarted=1
+  elif [ "$offline_for" -ge "$REBOOT_AFTER" ]; then
+    # a reboot only helps a wedged device; skip when kiosk intentionally off
+    systemctl is-active --quiet "$SERVICE" || continue
+    now="$(date +%s)"
+    last="$(cat "$STATE_DIR/last-netwatch-reboot" 2>/dev/null || echo 0)"
+    if [ $((now - last)) -ge "$REBOOT_BACKOFF" ]; then
+      echo "still offline after networking restart — rebooting device"
+      mkdir -p "$STATE_DIR"
+      echo "$now" > "$STATE_DIR/last-netwatch-reboot"
+      sync
+      reboot
+    fi
+  fi
+done
+EOF
+chmod +x /usr/local/bin/irl-netwatch
+
+cat > /etc/systemd/system/irl-player-netwatch.service <<'EOF'
+[Unit]
+Description=IRL Player network watchdog (repairs a dead connection)
+After=multi-user.target
+
+[Service]
+ExecStart=/usr/local/bin/irl-netwatch
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# --- 12. Auto-update: reinstall whenever the published install.sh changes -----
 # The device fetches $BASE_URL/install.sh on boot and every hour, compares
 # its hash to the one recorded at install time, and re-runs the script if it
 # changed. Any edit to the script (new app version, config fix, ...) rolls
@@ -474,6 +603,8 @@ set -u
 main() {
   BASE_URL="@BASE_URL@"
   STATE=/etc/irl-player/installer.sha256
+  PENDING=/etc/irl-player/pending-update
+  CANARY=/etc/irl-player/canary
 
   # never run two update checks (or a check during an install) at once
   exec 9>/var/lock/irl-update.lock
@@ -487,11 +618,36 @@ main() {
 
   NEW="$(sha256sum "$TMP" | awk '{print $1}')"
   OLD="$(cat "$STATE" 2>/dev/null || true)"
-  [ "$NEW" = "$OLD" ] && exit 0
+  if [ "$NEW" = "$OLD" ]; then
+    rm -f "$PENDING"
+    exit 0
+  fi
+
+  # Canary rollout: a device marked with the canary file applies instantly;
+  # everyone else waits FLEET_DELAY_HOURS (read from the NEW script, so a
+  # release published with 0 rolls out to the whole fleet immediately).
+  if [ ! -e "$CANARY" ]; then
+    DELAY_H="$(sed -n 's/^FLEET_DELAY_HOURS=\([0-9][0-9]*\)$/\1/p' "$TMP" | head -1)"
+    DELAY_H="${DELAY_H:-0}"
+    if [ "$DELAY_H" -gt 0 ]; then
+      now="$(date +%s)"
+      p_hash=""; p_time=0
+      [ -f "$PENDING" ] && read -r p_hash p_time < "$PENDING"
+      p_time="${p_time:-0}"
+      if [ "$p_hash" != "$NEW" ]; then
+        mkdir -p "$(dirname "$PENDING")"
+        echo "$NEW $now" > "$PENDING"
+        echo "new install.sh seen — this device applies it in ${DELAY_H}h (canary devices go first)"
+        exit 0
+      fi
+      [ $((now - p_time)) -lt $((DELAY_H * 3600)) ] && exit 0
+    fi
+  fi
 
   echo "install.sh changed (${OLD:-none} -> $NEW) — reinstalling"
   if bash "$TMP"; then
     echo "$NEW" > "$STATE"
+    rm -f "$PENDING"
     echo "update applied"
   else
     echo "reinstall failed — will retry next cycle" >&2
@@ -545,7 +701,7 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-# --- 11. Remove leftovers from previous installs ------------------------------
+# --- 13. Remove leftovers from previous installs ------------------------------
 # Anything the previous install created that this version of the script no
 # longer ships (see MANAGED_FILES) gets disabled and deleted here, so
 # services/helpers deleted from this script disappear from every device.
@@ -571,6 +727,7 @@ systemctl enable "$SERVICE_NAME" >/dev/null
 systemctl enable --now irl-player-hotkey >/dev/null
 systemctl enable --now irl-player-update.timer >/dev/null
 systemctl enable --now irl-player-watchdog >/dev/null
+systemctl enable --now irl-player-netwatch >/dev/null
 
 log "Starting kiosk ..."
 systemctl restart "$SERVICE_NAME"
