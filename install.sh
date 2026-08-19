@@ -27,7 +27,7 @@ set -euo pipefail
 
 # ----------------------- configuration -----------------------
 BASE_URL="${IRL_BASE_URL:-https://linux-player.theirlnetwork.com}"
-VERSION="1.2.5"
+VERSION="1.2.6"
 # Architectures with a build in packages/ — add e.g. "amd64" here once
 # packages/irl-player_<version>_amd64.deb exists.
 SUPPORTED_ARCHS="arm64"
@@ -56,7 +56,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=9
+INSTALLER_REV=10
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }

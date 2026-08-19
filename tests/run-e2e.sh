@@ -70,7 +70,9 @@ export IRL_BASE_URL="http://localhost:$PORT"
 echo "== 1. Fresh install (curl | bash, like a real device) =="
 curl -fsSL "http://localhost:$PORT/install.sh" | bash > "$E2E/install1.log" 2>&1
 check "[ \$? -eq 0 ] || grep -q Done '$E2E/install1.log'" "install.sh runs end-to-end without error"
-grep -q "Installer revision 9 (app 1.2.5)" "$E2E/install1.log" && ok "logs revision 9 / app 1.2.5" || bad "revision banner missing"
+REV="$(sed -n 's/^INSTALLER_REV=\([0-9]*\)$/\1/p' "$REPO/install.sh")"
+VER="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "$REPO/install.sh")"
+grep -q "Installer revision $REV (app $VER)" "$E2E/install1.log" && ok "logs revision $REV / app $VER" || bad "revision banner missing"
 for f in usr/local/bin/irl-kiosk-run usr/local/bin/irl-kiosk-toggle usr/local/bin/irl-hotkeyd \
          usr/local/bin/irl-update usr/local/bin/irl-watchdog \
          etc/systemd/system/irl-player-kiosk.service \
@@ -112,12 +114,12 @@ mv "$SITE/install.sh.real" "$SITE/install.sh"
 echo "== 5. Auto-update: script changed WITH a deleted service =="
 # v2 drops the whole hotkey feature (section 8 + its MANAGED_FILES lines + enable line)
 awk '/^# --- 8\. /{skip=1} /^# --- 9\. /{skip=0} !skip' "$SITE/install.sh" \
-  | sed -e '/irl-player-hotkey/d' -e '/irl-hotkeyd/d' -e 's/^INSTALLER_REV=9/INSTALLER_REV=10/' > "$SITE/install.v2"
+  | sed -e '/irl-player-hotkey/d' -e '/irl-hotkeyd/d' -e "s/^INSTALLER_REV=$REV/INSTALLER_REV=$((REV+1))/" > "$SITE/install.v2"
 mv "$SITE/install.v2" "$SITE/install.sh"
 bash -n "$SITE/install.sh" && ok "v2 script valid" || bad "v2 script broken"
 "$ROOT/usr/local/bin/irl-update" > "$E2E/update.log" 2>&1
 check "grep -q 'install.sh changed' '$E2E/update.log'" "change detected"
-check "grep -q 'Installer revision 10' '$E2E/update.log'" "new script executed"
+check "grep -q \"Installer revision $((REV+1))\" '$E2E/update.log'" "new script executed"
 check "grep -q 'update applied' '$E2E/update.log'" "update reported applied"
 check "[ ! -e '$ROOT/etc/systemd/system/irl-player-hotkey.service' ]" "deleted service unit removed from device"
 check "[ ! -e '$ROOT/usr/local/bin/irl-hotkeyd' ]" "deleted helper removed from device"
