@@ -17,17 +17,22 @@ systemctl disable --now "$SERVICE_NAME" 2>/dev/null || true
 systemctl disable --now irl-player-hotkey 2>/dev/null || true
 systemctl disable --now irl-player-update.timer 2>/dev/null || true
 systemctl disable --now irl-player-watchdog 2>/dev/null || true
+systemctl disable --now irl-player-netwatch 2>/dev/null || true
 rm -f "/etc/systemd/system/$SERVICE_NAME.service" \
       /etc/systemd/system/irl-player-hotkey.service \
       /etc/systemd/system/irl-player-update.service \
       /etc/systemd/system/irl-player-update.timer \
       /etc/systemd/system/irl-player-watchdog.service \
+      /etc/systemd/system/irl-player-netwatch.service \
       /etc/systemd/system.conf.d/irl-watchdog.conf \
+      /etc/apt/apt.conf.d/52irl-unattended-upgrades \
+      /etc/apt/apt.conf.d/60irl-auto-upgrades \
       /usr/local/bin/irl-kiosk-toggle \
       /usr/local/bin/irl-kiosk-run \
       /usr/local/bin/irl-hotkeyd \
       /usr/local/bin/irl-update \
       /usr/local/bin/irl-watchdog \
+      /usr/local/bin/irl-netwatch \
       /var/lock/irl-update.lock
 rm -rf /etc/irl-player /var/lib/irl-player
 systemctl daemon-reload
