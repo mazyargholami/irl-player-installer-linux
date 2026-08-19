@@ -31,10 +31,26 @@ SUPPORTED_ARCHS="arm64"
 APP_BIN="/opt/irl-player/IRLPlayer"
 KIOSK_USER="irlplayer"
 SERVICE_NAME="irl-player-kiosk"
+# Every file this installer creates on the device (one per line). Used for
+# cleanup: anything listed in the previous install's manifest but no longer
+# listed here is disabled and deleted on the next run — so removing a
+# service/helper from this script removes it from every device on its next
+# auto-update. Keep this list in sync when adding or deleting things below.
+MANIFEST=/etc/irl-player/manifest
+MANAGED_FILES="
+/etc/systemd/system/irl-player-kiosk.service
+/etc/systemd/system/irl-player-hotkey.service
+/etc/systemd/system/irl-player-update.service
+/etc/systemd/system/irl-player-update.timer
+/usr/local/bin/irl-kiosk-run
+/usr/local/bin/irl-kiosk-toggle
+/usr/local/bin/irl-hotkeyd
+/usr/local/bin/irl-update
+"
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=7
+INSTALLER_REV=8
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -395,6 +411,26 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
+
+# --- 10. Remove leftovers from previous installs ------------------------------
+# Anything the previous install created that this version of the script no
+# longer ships (see MANAGED_FILES) gets disabled and deleted here, so
+# services/helpers deleted from this script disappear from every device.
+if [ -f "$MANIFEST" ]; then
+  while IFS= read -r OLD_FILE; do
+    [ -n "$OLD_FILE" ] || continue
+    if printf '%s\n' $MANAGED_FILES | grep -Fxq "$OLD_FILE"; then
+      continue  # still managed by this version
+    fi
+    log "Removing obsolete $OLD_FILE"
+    case "$OLD_FILE" in
+      /etc/systemd/system/*.service|/etc/systemd/system/*.timer)
+        systemctl disable --now "$(basename "$OLD_FILE")" 2>/dev/null || true ;;
+    esac
+    rm -f "$OLD_FILE"
+  done < "$MANIFEST"
+fi
+printf '%s\n' $MANAGED_FILES | grep . > "$MANIFEST"
 
 systemctl daemon-reload
 systemctl set-default graphical.target >/dev/null

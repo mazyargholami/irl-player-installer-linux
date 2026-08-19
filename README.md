@@ -100,6 +100,13 @@ device that:
    fix, new hotkey, whatever — it re-runs the fresh script, which upgrades
    the device in place and briefly restarts the player
 
+This also covers **removals**: the installer keeps a manifest of every file
+it created (`/etc/irl-player/manifest`). On each run, anything the previous
+install created that the current script no longer lists in `MANAGED_FILES`
+is disabled and deleted. So adding a service rolls it out everywhere, and
+deleting one from `install.sh` (remember to drop it from `MANAGED_FILES`
+too) removes it from every device on its next update.
+
 If nothing changed, the check exits without touching anything, so playback
 is never interrupted by a no-op check. If the device is offline the check
 just retries next hour.
