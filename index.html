@@ -483,7 +483,9 @@
 
   <footer>
     <span>IRL Player for Linux · IRL Network</span>
-    <span>Guide version 9 · installer revision 8 · app 1.2.5</span>
+    <!-- filled in live from install.sh by the script below; this text is the
+         fallback if the fetch fails (e.g. viewing the file offline) -->
+    <span id="footer-versions">Guide version 9</span>
   </footer>
 </div>
 
@@ -502,4 +504,31 @@
       });
     });
   });
+
+  // Footer versions, read live from the published installer so they can
+  // never go stale: INSTALLER_REV and VERSION come straight out of
+  // install.sh, and the app version is then verified against the actual
+  // .deb hosted in packages/ (a HEAD request checks the file exists).
+  (function () {
+    var el = document.getElementById('footer-versions');
+    fetch('install.sh', { cache: 'no-store' })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
+      .then(function (text) {
+        var rev = (text.match(/^INSTALLER_REV=(\d+)/m) || [])[1];
+        var ver = (text.match(/^VERSION="([^"]+)"/m) || [])[1];
+        if (!rev && !ver) return;
+        var parts = [el.textContent];
+        if (rev) parts.push('installer revision ' + rev);
+        if (ver) parts.push('app ' + ver);
+        el.textContent = parts.join(' · ');
+        if (ver) {
+          fetch('packages/irl-player_' + ver + '_arm64.deb', { method: 'HEAD', cache: 'no-store' })
+            .then(function (r) {
+              if (!r.ok) el.textContent += ' (package missing!)';
+            })
+            .catch(function () { /* offline: leave as-is */ });
+        }
+      })
+      .catch(function () { /* offline: fallback text stays */ });
+  })();
 </script>

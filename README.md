@@ -86,6 +86,11 @@ published `install.sh` on boot and every hour (see
 [Auto-update](#auto-update) below) and reinstalls when it changes.
 Re-running the one-line installer by hand also still upgrades in place.
 
+The website footer reads `INSTALLER_REV` and `VERSION` live from the
+published `install.sh` (and verifies the matching `.deb` exists in
+`packages/`, showing "package missing!" if it doesn't), so it always shows
+what's actually deployed — nothing to update by hand there.
+
 ## Auto-update
 
 The installer sets up a systemd timer (`irl-player-update.timer`) on every
