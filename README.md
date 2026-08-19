@@ -78,10 +78,52 @@ devices installed before the switch are unaffected.
 
 1. Drop the new package into `packages/` — the file name must be
    `irl-player_<version>_<arch>.deb`
-2. In `install.sh`, bump `VERSION="..."`
+2. In `install.sh`, bump `VERSION="..."` (and `INSTALLER_REV`)
 3. Commit and push
 
-Re-running the one-line installer on a device upgrades it in place.
+**That's it — devices update themselves.** Every installed device checks the
+published `install.sh` on boot and every hour (see
+[Auto-update](#auto-update) below) and reinstalls when it changes.
+Re-running the one-line installer by hand also still upgrades in place.
+
+The website footer reads `INSTALLER_REV` and `VERSION` live from the
+published `install.sh` (and verifies the matching `.deb` exists in
+`packages/`, showing "package missing!" if it doesn't), so it always shows
+what's actually deployed — nothing to update by hand there.
+
+## Auto-update
+
+The installer sets up a systemd timer (`irl-player-update.timer`) on every
+device that:
+
+1. Fetches `https://linux-player.theirlnetwork.com/install.sh` on boot and
+   then hourly (with a random 0–10 min delay so devices don't all hit the
+   server at once)
+2. Compares its SHA-256 hash to the hash of the script the device was last
+   installed with (`/etc/irl-player/installer.sha256`)
+3. If **anything** in the script changed — new app version, service config
+   fix, new hotkey, whatever — it re-runs the fresh script, which upgrades
+   the device in place and briefly restarts the player
+
+This also covers **removals**: the installer keeps a manifest of every file
+it created (`/etc/irl-player/manifest`). On each run, anything the previous
+install created that the current script no longer lists in `MANAGED_FILES`
+is disabled and deleted. So adding a service rolls it out everywhere, and
+deleting one from `install.sh` (remember to drop it from `MANAGED_FILES`
+too) removes it from every device on its next update.
+
+If nothing changed, the check exits without touching anything, so playback
+is never interrupted by a no-op check. If the device is offline the check
+just retries next hour.
+
+```bash
+sudo systemctl list-timers irl-player-update.timer   # when is the next check?
+journalctl -u irl-player-update -e                   # update logs
+sudo irl-update                                      # force a check right now
+```
+
+> Devices installed before auto-update existed just need the one-line
+> installer re-run once by hand; from then on they self-update.
 
 ### Adding a new architecture (e.g. x86)
 
@@ -118,6 +160,8 @@ curl -fsSL https://YOUR_SERVER/irl-player/install.sh | sudo IRL_BASE_URL=https:/
      the screen stays on 24/7.
    - `irl-player-hotkey.service` watches raw keyboard input for the
      layer-toggle hotkey.
+   - `irl-player-update.timer` checks the published `install.sh` hourly and
+     reinstalls when it changes (see [Auto-update](#auto-update)).
 
 ## Hotkey: on top ↔ normal
 

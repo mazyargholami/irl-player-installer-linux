@@ -17,6 +17,8 @@
 #   4. Creates a dedicated "irlplayer" user and a systemd service that
 #      starts the app on boot and restarts it if it ever crashes
 #   5. Disables console blanking and any desktop display manager
+#   6. Sets up auto-update: the device re-fetches this script on boot and
+#      every hour, and reinstalls whenever the published script changes
 #
 set -euo pipefail
 
@@ -29,10 +31,26 @@ SUPPORTED_ARCHS="arm64"
 APP_BIN="/opt/irl-player/IRLPlayer"
 KIOSK_USER="irlplayer"
 SERVICE_NAME="irl-player-kiosk"
+# Every file this installer creates on the device (one per line). Used for
+# cleanup: anything listed in the previous install's manifest but no longer
+# listed here is disabled and deleted on the next run — so removing a
+# service/helper from this script removes it from every device on its next
+# auto-update. Keep this list in sync when adding or deleting things below.
+MANIFEST=/etc/irl-player/manifest
+MANAGED_FILES="
+/etc/systemd/system/irl-player-kiosk.service
+/etc/systemd/system/irl-player-hotkey.service
+/etc/systemd/system/irl-player-update.service
+/etc/systemd/system/irl-player-update.timer
+/usr/local/bin/irl-kiosk-run
+/usr/local/bin/irl-kiosk-toggle
+/usr/local/bin/irl-hotkeyd
+/usr/local/bin/irl-update
+"
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=6
+INSTALLER_REV=8
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -302,15 +320,129 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
+# --- 9. Auto-update: reinstall whenever the published install.sh changes ------
+# The device fetches $BASE_URL/install.sh on boot and every hour, compares
+# its hash to the one recorded at install time, and re-runs the script if it
+# changed. Any edit to the script (new app version, config fix, ...) rolls
+# out to every device automatically — no version file to maintain.
+log "Setting up auto-update (reinstalls when the published install.sh changes) ..."
+mkdir -p /etc/irl-player
+
+cat > /usr/local/bin/irl-update <<'EOF'
+#!/usr/bin/env bash
+# IRL Player auto-update check. Fetches the published install.sh and, if it
+# differs from the copy this device was installed with, re-runs it.
+#
+# Everything lives in main() so bash parses the whole script before running
+# it — the reinstall overwrites this very file, which would otherwise corrupt
+# the running instance.
+set -u
+
+main() {
+  BASE_URL="@BASE_URL@"
+  STATE=/etc/irl-player/installer.sha256
+
+  # never run two update checks (or a check during an install) at once
+  exec 9>/var/lock/irl-update.lock
+  flock -n 9 || exit 0
+
+  TMP="$(mktemp)"
+  trap 'rm -f "$TMP"' EXIT
+  # offline or server unreachable: fine, the timer tries again next hour
+  curl -fsSL --retry 3 -o "$TMP" "$BASE_URL/install.sh" || exit 0
+  head -1 "$TMP" | grep -q '^#!' || exit 0   # not a script (captive portal etc.)
+
+  NEW="$(sha256sum "$TMP" | awk '{print $1}')"
+  OLD="$(cat "$STATE" 2>/dev/null || true)"
+  [ "$NEW" = "$OLD" ] && exit 0
+
+  echo "install.sh changed (${OLD:-none} -> $NEW) — reinstalling"
+  if bash "$TMP"; then
+    echo "$NEW" > "$STATE"
+    echo "update applied"
+  else
+    echo "reinstall failed — will retry next cycle" >&2
+    exit 1
+  fi
+}
+
+main "$@"
+EOF
+sed -i "s|@BASE_URL@|$BASE_URL|" /usr/local/bin/irl-update
+chmod +x /usr/local/bin/irl-update
+
+# Record the hash of this exact installer so the updater only fires on a
+# future change. When piped from curl there is no file to hash, so fetch the
+# published copy; if that fails, the updater self-heals by reinstalling once
+# on its first successful check.
+SELF="${BASH_SOURCE[0]:-}"
+if [ -n "$SELF" ] && [ -f "$SELF" ]; then
+  sha256sum "$SELF" | awk '{print $1}' > /etc/irl-player/installer.sha256
+else
+  HASH_TMP="$(mktemp)"
+  if curl -fsSL --retry 3 -o "$HASH_TMP" "$BASE_URL/install.sh"; then
+    sha256sum "$HASH_TMP" | awk '{print $1}' > /etc/irl-player/installer.sha256
+  fi
+  rm -f "$HASH_TMP"
+fi
+
+cat > /etc/systemd/system/irl-player-update.service <<'EOF'
+[Unit]
+Description=IRL Player auto-update check
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/irl-update
+EOF
+
+cat > /etc/systemd/system/irl-player-update.timer <<'EOF'
+[Unit]
+Description=IRL Player auto-update check (on boot and hourly)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1h
+# spread devices out so they don't all hit the server at the same second
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+# --- 10. Remove leftovers from previous installs ------------------------------
+# Anything the previous install created that this version of the script no
+# longer ships (see MANAGED_FILES) gets disabled and deleted here, so
+# services/helpers deleted from this script disappear from every device.
+if [ -f "$MANIFEST" ]; then
+  while IFS= read -r OLD_FILE; do
+    [ -n "$OLD_FILE" ] || continue
+    if printf '%s\n' $MANAGED_FILES | grep -Fxq "$OLD_FILE"; then
+      continue  # still managed by this version
+    fi
+    log "Removing obsolete $OLD_FILE"
+    case "$OLD_FILE" in
+      /etc/systemd/system/*.service|/etc/systemd/system/*.timer)
+        systemctl disable --now "$(basename "$OLD_FILE")" 2>/dev/null || true ;;
+    esac
+    rm -f "$OLD_FILE"
+  done < "$MANIFEST"
+fi
+printf '%s\n' $MANAGED_FILES | grep . > "$MANIFEST"
+
 systemctl daemon-reload
 systemctl set-default graphical.target >/dev/null
 systemctl enable "$SERVICE_NAME" >/dev/null
 systemctl enable --now irl-player-hotkey >/dev/null
+systemctl enable --now irl-player-update.timer >/dev/null
 
 log "Starting kiosk ..."
 systemctl restart "$SERVICE_NAME"
 
 log "Done. IRL Player will start fullscreen on every boot."
+log "Auto-update: checks $BASE_URL/install.sh hourly and reinstalls on change"
 log "Hotkey:  Ctrl+Alt+P toggles kiosk (on top) <-> normal console/desktop"
 log "Logs:    journalctl -u $SERVICE_NAME -f"
 log "Stop:    sudo systemctl stop $SERVICE_NAME"
