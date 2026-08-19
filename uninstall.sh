@@ -15,11 +15,16 @@ log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 log "Stopping and removing kiosk service ..."
 systemctl disable --now "$SERVICE_NAME" 2>/dev/null || true
 systemctl disable --now irl-player-hotkey 2>/dev/null || true
+systemctl disable --now irl-player-update.timer 2>/dev/null || true
 rm -f "/etc/systemd/system/$SERVICE_NAME.service" \
       /etc/systemd/system/irl-player-hotkey.service \
+      /etc/systemd/system/irl-player-update.service \
+      /etc/systemd/system/irl-player-update.timer \
       /usr/local/bin/irl-kiosk-toggle \
       /usr/local/bin/irl-kiosk-run \
-      /usr/local/bin/irl-hotkeyd
+      /usr/local/bin/irl-hotkeyd \
+      /usr/local/bin/irl-update \
+      /var/lock/irl-update.lock
 rm -rf /etc/irl-player
 systemctl daemon-reload
 
