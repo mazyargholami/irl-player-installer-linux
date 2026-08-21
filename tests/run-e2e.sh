@@ -172,10 +172,15 @@ cat > "$ROOT/simbin/id" <<'STUB'
 [ "$1" = "-u" ] && { echo 1000; exit 0; }
 exit 0
 STUB
-cat > "$ROOT/simbin/runuser" <<'STUB'
+cat > "$ROOT/simbin/setpriv" <<'STUB'
 #!/bin/sh
-while [ "$1" != "--" ]; do shift; done
-shift
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --reuid|--regid) shift 2 ;;
+    --init-groups) shift ;;
+    *) break ;;
+  esac
+done
 exec "$@"
 STUB
 cat > "$ROOT/simbin/grim" <<STUB

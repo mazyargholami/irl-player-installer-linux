@@ -71,7 +71,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=11
+INSTALLER_REV=12
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -379,7 +379,7 @@ capture() {
   [ -n "$sock" ] || return 1
   tmp="$(mktemp)"
   if XDG_RUNTIME_DIR="$xdg" WAYLAND_DISPLAY="${sock##*/}" \
-       runuser -u "$KIOSK_USER" -- grim -t ppm -s 0.125 - > "$tmp" 2>/dev/null \
+       setpriv --reuid "$KIOSK_USER" --regid "$KIOSK_USER" --init-groups grim -t ppm -s 0.125 - > "$tmp" 2>/dev/null \
      && [ -s "$tmp" ]; then
     sha256sum "$tmp" | awk '{print $1}'
     rm -f "$tmp"
