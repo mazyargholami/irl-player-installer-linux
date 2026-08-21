@@ -410,7 +410,12 @@
           and insert the microSD card. Choose your Pi model, then the system:
           <strong>Raspberry Pi OS (64-bit)</strong>. Before writing, the Imager asks about
           settings — set your <strong>Wi-Fi name and password</strong> there so the Pi
-          connects to the internet by itself. Then write the card.</p>
+          connects to the internet by itself. Two more settings are worth doing right
+          there: give the device its <strong>own name</strong> (for example
+          <strong>shop-window-1</strong>) so you can always tell your players apart, and
+          turn on <strong>Raspberry Pi Connect</strong> so you can reach the device over
+          the internet later — the Imager signs you in through your browser. Then write
+          the card.</p>
         </div>
       </div>
       <div class="step">
@@ -537,12 +542,15 @@
         <h3>Manage it from anywhere</h3>
         <p>With the free <a href="https://www.raspberrypi.com/software/connect/" target="_blank" rel="noopener">Raspberry Pi Connect</a>
         service you can reach your device over the internet from any web browser —
-        no cables, no network setup. One-time setup: on the device, open the
+        no cables, no network setup. The easiest way to turn it on is
+        <strong>while flashing the card</strong>: the Raspberry Pi Imager's settings
+        include Raspberry Pi Connect — enable it there and every device is connected
+        from its very first start. On a device that's already running, open the
         terminal (<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>P</kbd> to exit the player) and type
         <strong>sudo apt install rpi-connect-lite</strong> (the Desktop version of the
         system already includes it), then <strong>rpi-connect signin</strong> and follow
-        the link it prints to sign in with a free Raspberry Pi account. From then on all
-        your devices appear at <a href="https://connect.raspberrypi.com" target="_blank" rel="noopener">connect.raspberrypi.com</a>,
+        the link it prints to sign in with a free Raspberry Pi account. Either way, all
+        your devices appear by name at <a href="https://connect.raspberrypi.com" target="_blank" rel="noopener">connect.raspberrypi.com</a>,
         wherever they are.</p>
       </div>
     </div>
@@ -607,7 +615,7 @@
     <span>IRL Player for Linux · IRL Network</span>
     <!-- filled in live from install.sh by the script below; this text is the
          fallback if the fetch fails (e.g. viewing the file offline) -->
-    <span id="footer-versions">Guide version 14</span>
+    <span id="footer-versions">Guide version 15</span>
   </footer>
 </div>
 
