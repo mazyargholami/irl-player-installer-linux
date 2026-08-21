@@ -38,11 +38,30 @@ rm -rf /etc/irl-player /var/lib/irl-player
 systemctl daemon-reload
 
 log "Removing irl-player package ..."
-apt-get remove -y irl-player 2>/dev/null || true
+# apt-daily/unattended-upgrades may hold the lock right when we run; wait for it
+# rather than failing silently.
+if ! apt-get -o DPkg::Lock::Timeout=120 remove -y irl-player; then
+  log "WARNING: could not remove the irl-player package (apt busy?)."
+  log "         Retry later with: sudo apt-get remove irl-player"
+fi
 
 if id "$KIOSK_USER" >/dev/null 2>&1; then
   log "Removing user '$KIOSK_USER' ..."
-  userdel -r "$KIOSK_USER" 2>/dev/null || true
+  # The kiosk session may still be tearing down from the service stop above;
+  # userdel fails while any of the user's processes live, so kill and retry.
+  loginctl terminate-user "$KIOSK_USER" 2>/dev/null || true
+  removed=0
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    pkill -KILL -u "$KIOSK_USER" 2>/dev/null || true
+    if userdel -r "$KIOSK_USER" 2>/dev/null; then removed=1; break; fi
+    sleep 1
+  done
+  if [ "$removed" = 1 ]; then
+    log "User removed."
+  else
+    log "WARNING: could not remove user '$KIOSK_USER' (processes still running?)."
+    log "         Retry later with: sudo userdel -r $KIOSK_USER"
+  fi
 fi
 
 log "Done. Note: if this Pi previously booted to a desktop, re-enable it with:"
