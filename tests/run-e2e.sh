@@ -38,7 +38,9 @@ cat > "$ROOT/bin/dpkg" <<'STUB'
 [ "$1" = "--print-architecture" ] && { echo arm64; exit 0; }
 exit 0
 STUB
-for t in apt-get useradd usermod; do
+# userdel/loginctl/pkill are stubbed so uninstall.sh can never touch the real
+# irlplayer user or its processes when the suite runs on a provisioned device
+for t in apt-get useradd usermod userdel loginctl pkill; do
   printf '#!/bin/sh\nexit 0\n' > "$ROOT/bin/$t"
 done
 chmod +x "$ROOT/bin/"*
@@ -244,6 +246,7 @@ check "[ -s '$ROOT/var/lib/irl-player/last-netwatch-reboot' ]" "reboot timestamp
 
 echo "== 11. Uninstall removes everything =="
 bash "$SITE/uninstall.sh" > "$E2E/uninstall.log" 2>&1 && ok "uninstall.sh runs clean" || bad "uninstall.sh errored"
+check "! grep -q WARNING '$E2E/uninstall.log'" "uninstall reported no warnings"
 LEFT=$(find "$ROOT/etc/systemd/system" "$ROOT/etc/systemd/system.conf.d" "$ROOT/etc/apt/apt.conf.d" "$ROOT/usr/local/bin" "$ROOT/etc/irl-player" "$ROOT/var/lib/irl-player" -type f 2>/dev/null | wc -l)
 check "[ '$LEFT' = 0 ]" "no installed files left behind"
 check "grep -q 'disable --now irl-player-update.timer' '$ROOT/systemctl.log'" "update timer disabled on uninstall"
