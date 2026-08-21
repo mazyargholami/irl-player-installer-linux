@@ -358,7 +358,7 @@
   </div>
 
   <div class="pills">
-    <span class="pill ok">Raspberry Pi 3 · 4 · 5 · Zero 2 W · CM5</span>
+    <span class="pill ok">CM5 · Raspberry Pi 5 · also 3 / 4 / Zero 2 W</span>
     <span class="pill ok">Raspberry Pi OS 64-bit</span>
     <span class="pill soon">More Linux devices coming soon</span>
   </div>
@@ -390,17 +390,8 @@
         <strong>64-bit</strong> — the 32-bit version won't work.</p>
       </div>
       <div class="card">
-        <div class="icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2.2" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><circle cx="9" cy="9" r="1.4"/><circle cx="15" cy="9" r="1.4"/><path d="M8 15h8"/></svg></div>
-        <h3>Raspberry Pi 5 (or 3 / 4 / Zero 2 W)</h3>
-        <p>The normal boards — <strong>ready to use out of the box</strong>. Flash a
-        microSD card with the Imager, put it in, connect the screen and power, done.
-        The Pi 5 is the fastest option and uses a <strong>micro-HDMI</strong> cable
-        and a <strong>USB-C power supply</strong> (use the official 27&nbsp;W one —
-        weak phone chargers cause random restarts).</p>
-      </div>
-      <div class="card">
         <div class="icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2.2" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M4 10h3M4 14h3M17 10h3M17 14h3M10 4v3M14 4v3M10 17v3M14 17v3"/></svg></div>
-        <h3>Compute Module 5 (CM5)</h3>
+        <h3>Compute Module 5 (CM5) — what most of our players run on</h3>
         <p>The same brain as a Pi&nbsp;5, but as a bare module: it <strong>needs a
         carrier board</strong> (like the official CM5 IO Board) to get its HDMI, USB
         and power connectors. Two kinds exist: <strong>CM5 Lite</strong> uses a
@@ -411,6 +402,15 @@
         so the Imager can write to it. Also check your CM5 variant has
         <strong>Wi-Fi</strong> — some don't, and those need a network cable. After
         the system boots, everything on this page is identical for both.</p>
+      </div>
+      <div class="card">
+        <div class="icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2.2" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><circle cx="9" cy="9" r="1.4"/><circle cx="15" cy="9" r="1.4"/><path d="M8 15h8"/></svg></div>
+        <h3>Raspberry Pi 5 (or 3 / 4 / Zero 2 W)</h3>
+        <p>The normal boards — <strong>ready to use out of the box</strong>. Flash a
+        microSD card with the Imager, put it in, connect the screen and power, done.
+        The Pi 5 is the fastest option and uses a <strong>micro-HDMI</strong> cable
+        and a <strong>USB-C power supply</strong> (use the official 27&nbsp;W one —
+        weak phone chargers cause random restarts).</p>
       </div>
       <div class="card">
         <div class="icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2.2" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></div>
@@ -455,7 +455,9 @@
           <strong>shop-window-1</strong>) so you can always tell your players apart, and
           turn on <strong>Raspberry Pi Connect</strong> so you can reach the device over
           the internet later — the Imager signs you in through your browser. Then write
-          the card.</p>
+          the card. <strong>On a CM5 with built-in storage</strong> there's no card —
+          see "Choosing your device and system" above for the one extra step
+          (the rpiboot tool); everything else here is the same.</p>
         </div>
       </div>
       <div class="step">
@@ -692,7 +694,7 @@
     <span>IRL Player for Linux · IRL Network</span>
     <!-- filled in live from install.sh by the script below; this text is the
          fallback if the fetch fails (e.g. viewing the file offline) -->
-    <span id="footer-versions">Guide version 16</span>
+    <span id="footer-versions">Guide version 17</span>
   </footer>
 </div>
 
