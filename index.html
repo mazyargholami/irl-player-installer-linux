@@ -250,6 +250,7 @@
   }
   .step h3 { margin: 0.15rem 0 0.35rem; font-size: 1.02rem; font-weight: 750; }
   .step p { margin: 0; color: var(--muted); font-size: 0.94rem; text-wrap: pretty; }
+  .step p + p { margin-top: 0.55rem; }
   .step p strong { color: var(--ink); }
   .step a { color: var(--accent-ink); font-weight: 600; }
 
@@ -435,8 +436,9 @@
         <h2>Starting from zero with a Raspberry Pi</h2>
         <p class="sub">
           Never touched a Raspberry Pi before? This is everything, start to
-          finish. You need a Raspberry Pi, a microSD card (16&nbsp;GB or more), a
-          screen with an HDMI cable, and Wi-Fi or a network cable.
+          finish. You need a Raspberry Pi or CM5, a microSD card of 16&nbsp;GB or more
+          (not needed on a CM5 with built-in storage), a screen with an HDMI cable,
+          and Wi-Fi or a network cable.
         </p>
       </span>
       <svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke-width="2.4" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
@@ -445,19 +447,25 @@
     <div class="steps">
       <div class="step">
         <div>
-          <h3>Put the system on the memory card</h3>
-          <p>On your computer, install <a href="https://www.raspberrypi.com/software/">Raspberry Pi Imager</a>
-          and insert the microSD card. Choose your Pi model, then the system:
+          <h3>Put the system on the device</h3>
+          <p>On your computer, install <a href="https://www.raspberrypi.com/software/">Raspberry Pi Imager</a>,
+          then get the device's storage connected:</p>
+          <p><strong>Pi 5 or CM5 Lite (microSD):</strong> just insert the
+          microSD card into your computer.</p>
+          <p><strong>CM5 with built-in storage (eMMC):</strong> there's no card.
+          Fit the module on its carrier board, connect the board's
+          <strong>flashing USB port</strong> to your computer, and run Raspberry Pi's
+          <a href="https://www.raspberrypi.com/documentation/computers/compute-module.html#flash-an-image-to-the-compute-module">rpiboot tool</a> —
+          the built-in storage then shows up in the Imager just like a card.</p>
+          <p>In the Imager, choose your device model, then the system:
           <strong>Raspberry Pi OS (64-bit)</strong>. Before writing, the Imager asks about
-          settings — set your <strong>Wi-Fi name and password</strong> there so the Pi
-          connects to the internet by itself. Two more settings are worth doing right
-          there: give the device its <strong>own name</strong> (for example
-          <strong>shop-window-1</strong>) so you can always tell your players apart, and
-          turn on <strong>Raspberry Pi Connect</strong> so you can reach the device over
-          the internet later — the Imager signs you in through your browser. Then write
-          the card. <strong>On a CM5 with built-in storage</strong> there's no card —
-          see "Choosing your device and system" above for the one extra step
-          (the rpiboot tool); everything else here is the same.</p>
+          settings — set your <strong>Wi-Fi name and password</strong> there so the device
+          connects to the internet by itself (skip if you'll use a network cable). Two
+          more settings are worth doing right there: give the device its
+          <strong>own name</strong> (for example <strong>shop-window-1</strong>) so you
+          can always tell your players apart, and turn on <strong>Raspberry Pi
+          Connect</strong> so you can reach the device over the internet later — the
+          Imager signs you in through your browser. Then write.</p>
         </div>
       </div>
       <div class="step">
@@ -694,7 +702,7 @@
     <span>IRL Player for Linux · IRL Network</span>
     <!-- filled in live from install.sh by the script below; this text is the
          fallback if the fetch fails (e.g. viewing the file offline) -->
-    <span id="footer-versions">Guide version 17</span>
+    <span id="footer-versions">Guide version 18</span>
   </footer>
 </div>
 
