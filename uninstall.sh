@@ -18,12 +18,14 @@ systemctl disable --now irl-player-hotkey 2>/dev/null || true
 systemctl disable --now irl-player-update.timer 2>/dev/null || true
 systemctl disable --now irl-player-watchdog 2>/dev/null || true
 systemctl disable --now irl-player-netwatch 2>/dev/null || true
+systemctl disable --now irl-gateway 2>/dev/null || true
 rm -f "/etc/systemd/system/$SERVICE_NAME.service" \
       /etc/systemd/system/irl-player-hotkey.service \
       /etc/systemd/system/irl-player-update.service \
       /etc/systemd/system/irl-player-update.timer \
       /etc/systemd/system/irl-player-watchdog.service \
       /etc/systemd/system/irl-player-netwatch.service \
+      /etc/systemd/system/irl-gateway.service \
       /etc/systemd/system.conf.d/irl-watchdog.conf \
       /etc/apt/apt.conf.d/52irl-unattended-upgrades \
       /etc/apt/apt.conf.d/60irl-auto-upgrades \
@@ -34,7 +36,9 @@ rm -f "/etc/systemd/system/$SERVICE_NAME.service" \
       /usr/local/bin/irl-watchdog \
       /usr/local/bin/irl-netwatch \
       /var/lock/irl-update.lock
-rm -rf /etc/irl-player /var/lib/irl-player
+# /opt/irl-gateway includes the per-device mqtt.json credentials — uninstall
+# means "back to normal", so the secret goes too
+rm -rf /etc/irl-player /var/lib/irl-player /opt/irl-gateway
 systemctl daemon-reload
 
 log "Removing irl-player package ..."
