@@ -91,7 +91,7 @@ for f in usr/local/bin/irl-kiosk-run usr/local/bin/irl-kiosk-toggle usr/local/bi
          etc/irl-player/manifest etc/irl-player/installer.sha256; do
   check "[ -e '$ROOT/$f' ]" "created $f"
 done
-check "! grep -q '\"password\"' '$SITE/install.sh'" "no plaintext MQTT credentials in the published installer"
+check "! [ -e '$ROOT/opt/irl-gateway/mqtt.json' ]" "installer itself writes no config file (helper's job)"
 check "'$ROOT/usr/local/bin/irl-gateway-config'" "config helper unpacks the MQTT config"
 check "python3 -c \"import json; c=json.load(open('$ROOT/opt/irl-gateway/mqtt.json')); assert c['host']\"" "unpacked config is valid JSON with a broker host"
 check "grep -q 'enable --now irl-player-update.timer' '$ROOT/systemctl.log'" "update timer enabled"
