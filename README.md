@@ -242,14 +242,32 @@ the config over HTTPS, with an optional per-device allowlist. Setup, done
 once in the Cloudflare dashboard:
 
 1. **Workers & Pages → Create → Create Worker** ("Start with Hello
-   World!"), name it `irl-config`, deploy, then **Edit code** and paste
-   the handler: it answers `GET /mqtt-config?serial=<device-serial>` with
-   the JSON from `env.MQTT_JSON`, returns `403 not approved` when
-   `env.ALLOWLIST` is non-empty and doesn't contain the serial, and `404`
-   for any other path. The handler must accept `env.MQTT_JSON` as either
-   a string **or** a parsed object
-   (`typeof env.MQTT_JSON === "string" ? env.MQTT_JSON :
-   JSON.stringify(env.MQTT_JSON)`) — see the variable-type note below.
+   World!"), name it `irl-config`, deploy, then **Edit code**, replace
+   everything with the handler below, and **Deploy**:
+
+   ```js
+   export default {
+     async fetch(request, env) {
+       const url = new URL(request.url);
+       if (url.pathname !== "/mqtt-config")
+         return new Response("not found", { status: 404 });
+
+       const serial = (url.searchParams.get("serial") || "").trim();
+       const allow = String(env.ALLOWLIST || "")
+         .split(",").map(s => s.trim()).filter(Boolean);
+       const approved = !allow.length || allow.includes(serial);
+       // shows up in Observability → Logs: which device asked, and the verdict
+       console.log(`serial=${serial || "(none)"} ${approved ? "served" : "refused"}`);
+       if (!approved)
+         return new Response("not approved", { status: 403 });
+
+       const cfg = typeof env.MQTT_JSON === "string"
+         ? env.MQTT_JSON
+         : JSON.stringify(env.MQTT_JSON);
+       return new Response(cfg, { headers: { "content-type": "application/json" } });
+     }
+   };
+   ```
 2. **Settings → Variables and Secrets** (after adding, click **Deploy** —
    staged variables don't apply until deployed; the **Bindings** tab must
    list them):
@@ -269,6 +287,13 @@ With the Worker in place: **rotation** = edit the `MQTT_JSON` secret in
 the dashboard (no repo change, no device touched); **security switch** =
 fill `ALLOWLIST` — unapproved devices get 403 immediately, approved ones
 never notice.
+
+**Approving a device** (once `ALLOWLIST` is in use): open the Worker's
+**Observability → Logs** — every request logs
+`serial=<device-serial> served|refused`, so a new device announces its
+own serial by asking. Copy that serial, append it to `ALLOWLIST`
+(comma-separated), Deploy. The device picks the config up on its next
+try; nothing is done on the device itself.
 
 ## Continuous integration
 
