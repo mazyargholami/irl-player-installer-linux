@@ -246,9 +246,17 @@ once in the Cloudflare dashboard:
    the handler: it answers `GET /mqtt-config?serial=<device-serial>` with
    the JSON from `env.MQTT_JSON`, returns `403 not approved` when
    `env.ALLOWLIST` is non-empty and doesn't contain the serial, and `404`
-   for any other path.
-2. **Settings → Variables and Secrets**:
-   - Secret `MQTT_JSON` — the full contents of `mqtt.json`.
+   for any other path. The handler must accept `env.MQTT_JSON` as either
+   a string **or** a parsed object
+   (`typeof env.MQTT_JSON === "string" ? env.MQTT_JSON :
+   JSON.stringify(env.MQTT_JSON)`) — see the variable-type note below.
+2. **Settings → Variables and Secrets** (after adding, click **Deploy** —
+   staged variables don't apply until deployed; the **Bindings** tab must
+   list them):
+   - `MQTT_JSON` — the full contents of `mqtt.json`. Type **JSON** works
+     (Cloudflare then hands the code a parsed object — hence the
+     stringify above); **Secret** keeps the value hidden in the
+     dashboard; plain **Text** also works.
    - Text `ALLOWLIST` — empty = open to all (same risk as the embedded
      blob); later, paste comma-separated device serials to lock it down.
      A device's serial: `grep Serial /proc/cpuinfo`.
