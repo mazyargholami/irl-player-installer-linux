@@ -269,9 +269,13 @@ once in the Cloudflare dashboard:
      }
    };
    ```
-2. **Settings → Variables and Secrets** (after adding, click **Deploy** —
-   staged variables don't apply until deployed; the **Bindings** tab must
-   list them):
+2. **Settings → Variables and Secrets**. ⚠️ **After changing ANY variable
+   (`MQTT_JSON`, `ALLOWLIST`, ...), the change is only staged — it does
+   NOT reach the running Worker until a new version is deployed.** The
+   reliable way: open **Edit code** (top right), change nothing, and
+   click **Deploy**. Verify on the **Bindings** tab (must list the
+   variables) or just test the URL from step 4 — until you deploy, the
+   Worker keeps serving with the old values.
    - `MQTT_JSON` — the full contents of `mqtt.json`. Type **JSON** works
      (Cloudflare then hands the code a parsed object — hence the
      stringify above); **Secret** keeps the value hidden in the
