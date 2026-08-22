@@ -269,9 +269,13 @@ once in the Cloudflare dashboard:
      }
    };
    ```
-2. **Settings → Variables and Secrets** (after adding, click **Deploy** —
-   staged variables don't apply until deployed; the **Bindings** tab must
-   list them):
+2. **Settings → Variables and Secrets**. ⚠️ **After changing ANY variable
+   (`MQTT_JSON`, `ALLOWLIST`, ...), the change is only staged — it does
+   NOT reach the running Worker until a new version is deployed.** The
+   reliable way: open **Edit code** (top right), change nothing, and
+   click **Deploy**. Verify on the **Bindings** tab (must list the
+   variables) or just test the URL from step 4 — until you deploy, the
+   Worker keeps serving with the old values.
    - `MQTT_JSON` — the full contents of `mqtt.json`. Type **JSON** works
      (Cloudflare then hands the code a parsed object — hence the
      stringify above); **Secret** keeps the value hidden in the
@@ -285,10 +289,19 @@ once in the Cloudflare dashboard:
 4. Test: `curl "https://config.theirlnetwork.com/mqtt-config?serial=test"`
    must return the JSON.
 
-With the Worker in place: **rotation** = edit the `MQTT_JSON` secret in
-the dashboard (no repo change, no device touched); **security switch** =
-fill `ALLOWLIST` — unapproved devices get 403 immediately, approved ones
-never notice.
+With the Worker in place: **rotation** = edit `MQTT_JSON` in the
+dashboard (then Edit code → Deploy; no repo change, no device touched);
+**security switch** = fill `ALLOWLIST` — unapproved devices get 403
+immediately, approved ones never notice.
+
+**How fast a rotation reaches the fleet:** devices re-fetch at every
+gateway start and auto-restart daily (`RuntimeMaxSec=1d`), so every
+approved device has the new credential **within 24 hours** (instant per
+device with `sudo systemctl restart irl-gateway`). For a zero-downtime
+broker rotation, overlap: add the new credential on the broker while the
+old one still works → update `MQTT_JSON` in Cloudflare → wait a day →
+remove the old credential from the broker. No device ever loses its
+connection.
 
 **Approving a device** (once `ALLOWLIST` is in use): open the Worker's
 **Observability → Logs** — every request logs a message like
