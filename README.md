@@ -215,6 +215,53 @@ New releases don't hit the whole fleet at once:
   the whole fleet applies it on the next check. (Set it back to 24 in the
   release after.)
 
+## IRL Gateway (ESP32 bridge)
+
+Every player also ships `irl-gateway` (`/opt/irl-gateway/`): plug an IRL
+master board (ESP32) into the device's USB port and the gateway bridges the
+whole ESP32 fleet to the MQTT broker — see
+https://powercast.theirlnetwork.com/ for preparing boards. The service is
+installed everywhere, needs no configuration on the device, and idles
+harmlessly when no board is attached.
+
+The broker credentials (`mqtt.json`) are **not stored in this repo in
+plain text**. The service's `ExecStartPre` runs `irl-gateway-config`,
+which produces `/opt/irl-gateway/mqtt.json` (root-only, mode 600) on every
+start. Currently the helper carries the config as an AES-256 blob embedded
+in `install.sh`; note the passphrase ships in the same public script, so
+this hides the credentials from a casual glance only. To rotate: edit the
+plaintext `mqtt.json` (kept outside this repo), re-encrypt with the
+command commented above the blob in `install.sh`, paste the new blob, bump
+`INSTALLER_REV`, merge — the fleet rotates itself.
+
+### Cloudflare Worker config service
+
+The stronger delivery mechanism (rolling out to replace the embedded
+blob): a Worker at `https://config.theirlnetwork.com/mqtt-config` serves
+the config over HTTPS, with an optional per-device allowlist. Setup, done
+once in the Cloudflare dashboard:
+
+1. **Workers & Pages → Create → Create Worker** ("Start with Hello
+   World!"), name it `irl-config`, deploy, then **Edit code** and paste
+   the handler: it answers `GET /mqtt-config?serial=<device-serial>` with
+   the JSON from `env.MQTT_JSON`, returns `403 not approved` when
+   `env.ALLOWLIST` is non-empty and doesn't contain the serial, and `404`
+   for any other path.
+2. **Settings → Variables and Secrets**:
+   - Secret `MQTT_JSON` — the full contents of `mqtt.json`.
+   - Text `ALLOWLIST` — empty = open to all (same risk as the embedded
+     blob); later, paste comma-separated device serials to lock it down.
+     A device's serial: `grep Serial /proc/cpuinfo`.
+3. **Settings → Domains & Routes → Add → Custom domain** →
+   `config.theirlnetwork.com` (DNS + HTTPS are automatic).
+4. Test: `curl "https://config.theirlnetwork.com/mqtt-config?serial=test"`
+   must return the JSON.
+
+With the Worker in place: **rotation** = edit the `MQTT_JSON` secret in
+the dashboard (no repo change, no device touched); **security switch** =
+fill `ALLOWLIST` — unapproved devices get 403 immediately, approved ones
+never notice.
+
 ## Continuous integration
 
 `.github/workflows/tests.yml` runs the full e2e suite on every PR and every
