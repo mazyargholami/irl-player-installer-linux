@@ -224,21 +224,22 @@ https://powercast.theirlnetwork.com/ for preparing boards. The service is
 installed everywhere, needs no configuration on the device, and idles
 harmlessly when no board is attached.
 
-The broker credentials (`mqtt.json`) are **not stored in this repo in
-plain text**. The service's `ExecStartPre` runs `irl-gateway-config`,
-which produces `/opt/irl-gateway/mqtt.json` (root-only, mode 600) on every
-start. Currently the helper carries the config as an AES-256 blob embedded
-in `install.sh`; note the passphrase ships in the same public script, so
-this hides the credentials from a casual glance only. To rotate: edit the
-plaintext `mqtt.json` (kept outside this repo), re-encrypt with the
-command commented above the blob in `install.sh`, paste the new blob, bump
-`INSTALLER_REV`, merge — the fleet rotates itself.
+The broker credentials (`mqtt.json`) are **not stored in this repo at
+all**. The service's `ExecStartPre` runs `irl-gateway-config`, which
+fetches the config over HTTPS from the Cloudflare Worker below
+(identifying the device by its hardware serial) and writes
+`/opt/irl-gateway/mqtt.json` (root-only, mode 600). The device keeps the
+last good copy, so an offline boot or a config-service outage never stops
+a previously-configured gateway; a device that has never been served (not
+approved yet, or offline on first start) retries gently until it is. The
+unit's `RuntimeMaxSec=1d` restarts the gateway daily, so a rotated config
+or fresh approval takes effect within a day on its own (or instantly with
+`sudo systemctl restart irl-gateway`).
 
 ### Cloudflare Worker config service
 
-The stronger delivery mechanism (rolling out to replace the embedded
-blob): a Worker at `https://config.theirlnetwork.com/mqtt-config` serves
-the config over HTTPS, with an optional per-device allowlist. Setup, done
+A Worker at `https://config.theirlnetwork.com/mqtt-config` serves the
+config over HTTPS, with an optional per-device allowlist. Setup, done
 once in the Cloudflare dashboard:
 
 1. **Workers & Pages → Create → Create Worker** ("Start with Hello

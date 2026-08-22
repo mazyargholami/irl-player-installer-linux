@@ -60,12 +60,15 @@ redirect() {  # rewrite absolute system paths into $ROOT
       -e "s|/boot/cmdline.txt|$ROOT/boot/cmdline.txt|g" \
       -e "s|/opt/irl-player/IRLPlayer|$ROOT/opt/IRLPlayer|g" \
       -e "s|/opt/irl-gateway|$ROOT/opt/irl-gateway|g" \
+      -e "s|https://config.theirlnetwork.com/mqtt-config|http://localhost:$PORT/mqtt-config|g" \
       -e "s|/usr/share/icons|$ROOT/usr/share/icons|g" \
       "$1"
 }
 redirect "$REPO/install.sh"   > "$SITE/install.sh"
 redirect "$REPO/uninstall.sh" > "$SITE/uninstall.sh"
 ln -s "$REPO/packages" "$SITE/packages"
+# stands in for the Cloudflare config service (query strings are ignored)
+printf '{"host": "test-broker", "port": 8883}\n' > "$SITE/mqtt-config"
 python3 -m http.server "$PORT" --directory "$SITE" >/dev/null 2>&1 &
 SERVER=$!
 until curl -sf -o /dev/null "http://localhost:$PORT/install.sh"; do :; done
@@ -92,8 +95,9 @@ for f in usr/local/bin/irl-kiosk-run usr/local/bin/irl-kiosk-toggle usr/local/bi
   check "[ -e '$ROOT/$f' ]" "created $f"
 done
 check "! [ -e '$ROOT/opt/irl-gateway/mqtt.json' ]" "installer itself writes no config file (helper's job)"
-check "'$ROOT/usr/local/bin/irl-gateway-config'" "config helper unpacks the MQTT config"
-check "python3 -c \"import json; c=json.load(open('$ROOT/opt/irl-gateway/mqtt.json')); assert c['host']\"" "unpacked config is valid JSON with a broker host"
+check "! grep -q 'MQTT_JSON_ENC\|GWK=' '$SITE/install.sh'" "no credential blob or passphrase left in the installer"
+check "'$ROOT/usr/local/bin/irl-gateway-config'" "config helper fetches the MQTT config"
+check "python3 -c \"import json; c=json.load(open('$ROOT/opt/irl-gateway/mqtt.json')); assert c['host']\"" "fetched config is valid JSON with a broker host"
 check "grep -q 'enable --now irl-player-update.timer' '$ROOT/systemctl.log'" "update timer enabled"
 check "grep -q 'restart irl-player-kiosk' '$ROOT/systemctl.log'" "kiosk (re)started"
 check "[ -L '$ROOT/etc/irl-player/icons/default/cursors' ]" "transparent-cursor symlink created"

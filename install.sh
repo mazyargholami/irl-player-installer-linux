@@ -75,7 +75,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=14
+INSTALLER_REV=15
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -1242,26 +1242,38 @@ DTt1ziw6WWKuaJMzrNYH2cbpdcxvF4g3m5M=
 -----END CERTIFICATE-----
 GATEWAY_CA_EOF
 
-# The MQTT config is carried in this script as an AES-256 blob and unpacked
-# on the device at service start. NOTE: the passphrase is in this script too,
-# so this hides the credentials from a casual glance only — it is NOT strong
-# secrecy. Rotating broker credentials = re-encrypt + publish; the fleet picks
-# it up on the next auto-update. Re-encrypt with (passphrase in
-# irl-microcontroller/gateway/fleet.key):
-#   openssl enc -aes-256-cbc -pbkdf2 -salt -in mqtt.json \
-#     -pass file:fleet.key | base64 | tr -d '\n'
+# The MQTT config is fetched over HTTPS from the fleet config service (a
+# Cloudflare Worker) at every gateway start, identified by the device's
+# hardware serial. No credentials live in this script. The device keeps the
+# last good copy, so a network blip or config-service outage never stops a
+# previously-configured gateway. Rotation = edit the MQTT_JSON value in the
+# Cloudflare dashboard (devices refresh within a day via RuntimeMaxSec, or
+# instantly on systemctl restart irl-gateway). Access control = the
+# ALLOWLIST variable in the dashboard; see README "Cloudflare Worker config
+# service".
 cat > /usr/local/bin/irl-gateway-config <<'GWCONF_EOF'
 #!/usr/bin/env bash
-# Unpacks the fleet-published MQTT config for the IRL gateway.
-set -euo pipefail
+# Fetches the fleet MQTT config for the IRL gateway from the config service.
+set -u
 OUT=/opt/irl-gateway/mqtt.json
-MQTT_JSON_ENC="U2FsdGVkX1/Z/uMzJA3ufB0L+Kd3p5BVLwlyGc8xFv0y1VrCYwfqH5MkHLtWezrcKwsSAj01Ix3a76lmRjYJQt+KmfR2OyrTOieRCLkfo6Io0p9ClYhfQL5A1AzznM6N/neYm2eqkLXNgEZmrFZeQB38tq2+oHet8BIggR1YOQBmR7MmOY8yvCG3ZVsnxwuuHbnZshFUqd4dI87MVOl8QVR2w2fKPWaMzAY85LmG291rjCzcg1UmR7MBSIIrAEPsES7zwej8J7uO9mBZyo4IFQYvvuhExPhOP7MxpGS0KL8="
-GWK="fd4f86234a92de052ff70e8e5cd5995fe6409c21978e3e1ac389d1f235938743"
-export GWK
+URL="https://config.theirlnetwork.com/mqtt-config"
+SERIAL="$(awk '/^Serial/{print $3}' /proc/cpuinfo 2>/dev/null || true)"
 umask 077
-printf '%s' "$MQTT_JSON_ENC" | base64 -d \
-  | openssl enc -d -aes-256-cbc -pbkdf2 -salt -pass env:GWK > "$OUT.tmp"
-mv "$OUT.tmp" "$OUT"
+if curl -fsS --max-time 20 "${URL}?serial=${SERIAL}" -o "$OUT.tmp" 2>/dev/null \
+   && grep -q '"host"' "$OUT.tmp"; then
+  mv "$OUT.tmp" "$OUT"
+  exit 0
+fi
+rm -f "$OUT.tmp"
+if [ -s "$OUT" ]; then
+  echo "config fetch failed — using the cached config" >&2
+  exit 0
+fi
+# no config and no cache (offline, or this serial is not approved yet):
+# pause so the systemd restart loop stays gentle on the config service
+echo "config fetch failed and no cached config — retrying shortly" >&2
+sleep 55
+exit 1
 GWCONF_EOF
 chmod +x /usr/local/bin/irl-gateway-config
 
@@ -1282,11 +1294,14 @@ Description=IRL Gateway (USB master board -> MQTT bridge)
 After=network-online.target
 Wants=network-online.target
 [Service]
-# unpack the fleet-published config on every start
+# fetch the fleet-published config on every start
 ExecStartPre=/usr/local/bin/irl-gateway-config
 ExecStart=/opt/irl-gateway/venv/bin/python3 /opt/irl-gateway/gateway.py
 Restart=always
 RestartSec=5
+# restart daily so a rotated config (or a fresh approval) is picked up
+# within a day even without any manual restart
+RuntimeMaxSec=1d
 
 [Install]
 WantedBy=multi-user.target
