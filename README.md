@@ -312,13 +312,19 @@ its next try (it retries about once a minute until served); nothing is
 done on the device itself.
 
 With a large fleet the log stream gets busy — don't scroll it, **filter
-it**: in Observability → Logs, search/filter on the message field for
-`refused`. That shows exactly the devices waiting for approval and
-nothing else (an unapproved device retries every minute, so it will
-always be near the top). Devices that are already approved fetch only at
-gateway start and then daily, so `served` lines stay rare. Note Workers
-Logs keeps a few days of history — approve devices as they appear rather
-than mining old logs.
+it**. A bare word typed in the search bar does NOT match; query the
+`message` field explicitly: **Query Builder → Filters → + Add → field
+`message` → contains → `refused`** (or type `message` in the search bar
+and follow the autocomplete to Message → contains → refused). Save it
+via **Saved Queries** as "awaiting approval". Mind the **time-range
+picker** — a correct query still shows nothing if the events are older
+than the selected window — and searched logs can lag the live stream by
+a minute or two. The filtered view shows exactly the devices waiting for
+approval (an unapproved device without a cached config retries every
+minute, so it stays near the top). Approved devices fetch only at
+gateway start and then daily, so `served` lines stay rare. Workers Logs
+keeps a few days of history — approve devices as they appear rather than
+mining old logs.
 
 ## Continuous integration
 
