@@ -86,12 +86,14 @@ for f in usr/local/bin/irl-kiosk-run usr/local/bin/irl-kiosk-toggle usr/local/bi
          etc/systemd/system.conf.d/irl-watchdog.conf \
          etc/systemd/system/irl-gateway.service \
          opt/irl-gateway/gateway.py opt/irl-gateway/broker-ca.pem \
+         usr/local/bin/irl-gateway-config \
          etc/apt/apt.conf.d/52irl-unattended-upgrades etc/apt/apt.conf.d/60irl-auto-upgrades \
          etc/irl-player/manifest etc/irl-player/installer.sha256; do
   check "[ -e '$ROOT/$f' ]" "created $f"
 done
-check "! [ -e '$ROOT/opt/irl-gateway/mqtt.json' ]" "gateway secret (mqtt.json) is NOT shipped by the installer"
-check "grep -q 'ConditionPathExists=$ROOT/opt/irl-gateway/mqtt.json' '$ROOT/etc/systemd/system/irl-gateway.service'" "gateway service is gated on the per-device secret"
+check "! grep -q '\"password\"' '$SITE/install.sh'" "no plaintext MQTT credentials in the published installer"
+check "'$ROOT/usr/local/bin/irl-gateway-config'" "config helper unpacks the MQTT config"
+check "python3 -c \"import json; c=json.load(open('$ROOT/opt/irl-gateway/mqtt.json')); assert c['host']\"" "unpacked config is valid JSON with a broker host"
 check "grep -q 'enable --now irl-player-update.timer' '$ROOT/systemctl.log'" "update timer enabled"
 check "grep -q 'restart irl-player-kiosk' '$ROOT/systemctl.log'" "kiosk (re)started"
 check "[ -L '$ROOT/etc/irl-player/icons/default/cursors' ]" "transparent-cursor symlink created"
@@ -99,7 +101,7 @@ grep -q 'consoleblank=0' "$ROOT/boot/cmdline.txt" && ok "console blanking disabl
 c=$(grep -c 'consoleblank=0' "$ROOT/boot/cmdline.txt"); [ "$c" = 1 ] && ok "consoleblank added exactly once" || bad "consoleblank duplicated"
 
 echo "== 2. Generated scripts are valid =="
-for s in irl-kiosk-run irl-kiosk-toggle irl-update irl-watchdog irl-netwatch; do
+for s in irl-kiosk-run irl-kiosk-toggle irl-update irl-watchdog irl-netwatch irl-gateway-config; do
   check "bash -n '$ROOT/usr/local/bin/$s'" "bash -n $s"
 done
 check "PYTHONPYCACHEPREFIX='$E2E/pycache' python3 -m py_compile '$ROOT/usr/local/bin/irl-hotkeyd'" "python syntax irl-hotkeyd"

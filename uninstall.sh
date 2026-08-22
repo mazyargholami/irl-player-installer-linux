@@ -35,6 +35,7 @@ rm -f "/etc/systemd/system/$SERVICE_NAME.service" \
       /usr/local/bin/irl-update \
       /usr/local/bin/irl-watchdog \
       /usr/local/bin/irl-netwatch \
+      /usr/local/bin/irl-gateway-config \
       /var/lock/irl-update.lock
 # /opt/irl-gateway includes the per-device mqtt.json credentials — uninstall
 # means "back to normal", so the secret goes too
