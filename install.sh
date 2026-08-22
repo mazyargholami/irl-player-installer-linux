@@ -75,7 +75,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=15
+INSTALLER_REV=16
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -593,7 +593,7 @@ EOF
 # It is deliberately NOT written by this public script and never touched by
 # reinstalls, so secrets stay off the website and survive every auto-update.
 # Source of truth for the code: irl-microcontroller repo, gateway/gateway.py.
-log "Installing IRL gateway (runs only on devices with /opt/irl-gateway/mqtt.json) ..."
+log "Installing IRL gateway (fetches its config from the fleet config service; unapproved devices request access automatically) ..."
 mkdir -p /opt/irl-gateway
 
 cat > /opt/irl-gateway/gateway.py <<'GATEWAY_PY_EOF'
