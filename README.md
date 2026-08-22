@@ -276,9 +276,10 @@ once in the Cloudflare dashboard:
      (Cloudflare then hands the code a parsed object — hence the
      stringify above); **Secret** keeps the value hidden in the
      dashboard; plain **Text** also works.
-   - Text `ALLOWLIST` — empty = open to all (same risk as the embedded
-     blob); later, paste comma-separated device serials to lock it down.
-     A device's serial: `grep Serial /proc/cpuinfo`.
+   - `ALLOWLIST` — type **Text** (comma-separated serials, e.g.
+     `0aa6bd2679151255,10000000abc123`). Empty = open to all; non-empty =
+     only listed devices are served. A device's serial:
+     `grep Serial /proc/cpuinfo`.
 3. **Settings → Domains & Routes → Add → Custom domain** →
    `config.theirlnetwork.com` (DNS + HTTPS are automatic).
 4. Test: `curl "https://config.theirlnetwork.com/mqtt-config?serial=test"`
@@ -290,11 +291,21 @@ fill `ALLOWLIST` — unapproved devices get 403 immediately, approved ones
 never notice.
 
 **Approving a device** (once `ALLOWLIST` is in use): open the Worker's
-**Observability → Logs** — every request logs
-`serial=<device-serial> served|refused`, so a new device announces its
-own serial by asking. Copy that serial, append it to `ALLOWLIST`
-(comma-separated), Deploy. The device picks the config up on its next
-try; nothing is done on the device itself.
+**Observability → Logs** — every request logs a message like
+`serial=0aa6bd2679151255 served` (or `... refused`), so a new device
+announces its own serial by asking. Copy that serial, append it to
+`ALLOWLIST` (comma-separated), Deploy. The device picks the config up on
+its next try (it retries about once a minute until served); nothing is
+done on the device itself.
+
+With a large fleet the log stream gets busy — don't scroll it, **filter
+it**: in Observability → Logs, search/filter on the message field for
+`refused`. That shows exactly the devices waiting for approval and
+nothing else (an unapproved device retries every minute, so it will
+always be near the top). Devices that are already approved fetch only at
+gateway start and then daily, so `served` lines stay rare. Note Workers
+Logs keeps a few days of history — approve devices as they appear rather
+than mining old logs.
 
 ## Continuous integration
 
