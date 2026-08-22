@@ -314,9 +314,13 @@ done on the device itself.
 With a large fleet the log stream gets busy — don't scroll it, **filter
 it**. A bare word typed in the search bar does NOT match; query the
 `message` field explicitly: **Query Builder → Filters → + Add → field
-`message` → contains → `refused`** (or type `message` in the search bar
-and follow the autocomplete to Message → contains → refused). Save it
-via **Saved Queries** as "awaiting approval". Mind the **time-range
+`message` → operator "contains" → value `refused`**. Two gotchas in
+Cloudflare's filter UI: the operators are shown as **icons** — "contains"
+is the **magnifying-glass (search) icon** — and the value must be just
+the single word `refused`, not the full message (a full message like
+`serial=test refused` only matches that one device; "contains refused"
+matches every refusal from every serial). Save it via **Saved Queries**
+as "awaiting approval". Mind the **time-range
 picker** — a correct query still shows nothing if the events are older
 than the selected window — and searched logs can lag the live stream by
 a minute or two. The filtered view shows exactly the devices waiting for
