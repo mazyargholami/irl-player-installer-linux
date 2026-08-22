@@ -67,11 +67,14 @@ MANAGED_FILES="
 /usr/local/bin/irl-update
 /usr/local/bin/irl-watchdog
 /usr/local/bin/irl-netwatch
+/etc/systemd/system/irl-gateway.service
+/opt/irl-gateway/gateway.py
+/opt/irl-gateway/broker-ca.pem
 "
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=12
+INSTALLER_REV=13
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -582,7 +585,694 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
-# --- 12. Auto-update: reinstall whenever the published install.sh changes -----
+# --- 12. IRL Gateway: USB master board -> MQTT bridge (opt-in per device) -----
+# The gateway code ships to every device, but the service only runs where
+# /opt/irl-gateway/mqtt.json exists — that file holds the MQTT broker
+# credentials and is placed by hand once per device (root:root, chmod 600).
+# It is deliberately NOT written by this public script and never touched by
+# reinstalls, so secrets stay off the website and survive every auto-update.
+# Source of truth for the code: irl-microcontroller repo, gateway/gateway.py.
+log "Installing IRL gateway (runs only on devices with /opt/irl-gateway/mqtt.json) ..."
+mkdir -p /opt/irl-gateway
+
+cat > /opt/irl-gateway/gateway.py <<'GATEWAY_PY_EOF'
+#!/usr/bin/env python3
+"""
+IRL Gateway - PC-side live monitor for a IRL master over USB serial.
+
+Runs on the computer (normal Python 3, not MicroPython). It finds the
+master board automatically among the connected USB-serial devices and
+speaks the master's machine-readable serial protocol: one JSON object
+per line (see master/main.py). The gateway is the human-readable end -
+it renders a live dashboard of every worker (unique id, LED state,
+chip temperature, last heard) plus a rolling event log, and is the
+natural place to forward fleet state to a server later.
+
+Every device has a unique id: its full MAC as 12 hex chars - 2^48
+possible ids, so any fleet size is fine with zero registration.
+
+Whatever you type is forwarded to the master:
+
+    list | on | off | on <n> | on <id> | off <n|id>     (q quits)
+
+Runs on macOS, Linux (incl. Raspberry Pi), and Windows.
+
+Usage:
+    python3 gateway/gateway.py            # auto-detect the master
+    python3 gateway/gateway.py /dev/cu.usbserial-1120   # use this port
+    python gateway/gateway.py COM5        # Windows, explicit port
+    python3 gateway/gateway.py --touch    # event log shows only worker
+                                          # touch events (combinable with
+                                          # an explicit port)
+
+Piped/redirected (no TTY) it degrades to a plain timestamped line log:
+    python3 gateway/gateway.py > fleet.log
+
+MQTT bridge (optional): if gateway/mqtt.json exists (copy
+mqtt.example.json and fill in the broker credentials - the real file
+is gitignored), the gateway also bridges the fleet to an MQTT broker
+over TLS. Topics, all under <base_topic>/<master_id>/:
+    fleet             retained inventory snapshot: master id + its own
+                      chip temp + every worker's state
+    events            every master event, as-is plus a "ts" field
+    workers/<id>      retained per-worker state:
+                      {"id","name","led","temp","online","ts"}
+    status            retained "online" / "master-offline" / "offline"
+                      ("offline" is the broker's last-will if the
+                      gateway dies)
+    cmd  (subscribed) publish "on", "off", "on <id>", "off <id>",
+                      "list" here and the gateway forwards it to the
+                      master - this is how a server switches LEDs
+The broker's self-signed CA chain is pinned via gateway/broker-ca.pem
+(refresh it with: python3 gateway/gateway.py --fetch-ca).
+
+Requires:  pip install -r gateway/requirements.txt
+Note:      close Thonny / mpremote first - only one program can hold
+           the serial port. Opening the port may briefly reset the
+           board (USB auto-reset wiring); the master rediscovers the
+           whole fleet by itself within a second or two.
+"""
+
+import json
+import os
+import re
+import select
+import sys
+import time
+from collections import deque
+
+try:
+    import serial
+    from serial.tools import list_ports
+except ImportError:
+    sys.exit("pyserial is missing - install it with:\n"
+             "  pip install -r gateway/requirements.txt")
+
+try:
+    import paho.mqtt.client as paho
+except ImportError:
+    paho = None  # fine unless gateway/mqtt.json asks for MQTT
+
+GATEWAY_DIR = os.path.dirname(os.path.abspath(__file__))
+MQTT_CONFIG = os.path.join(GATEWAY_DIR, "mqtt.json")
+
+
+# ---- cross-platform keyboard (dashboard input) ----------------------
+if os.name == "nt":
+    import msvcrt
+
+    def keyboard_init():
+        os.system("")  # switches the Windows console to ANSI colors
+        return None
+
+    def keyboard_restore(state):
+        pass
+
+    def read_keys():
+        keys = []
+        while msvcrt.kbhit():
+            ch = msvcrt.getwch()
+            keys.append("\n" if ch == "\r" else ch)
+        return keys
+else:
+    import termios
+    import tty
+
+    def keyboard_init():
+        state = termios.tcgetattr(sys.stdin.fileno())
+        tty.setcbreak(sys.stdin.fileno())
+        return state
+
+    def keyboard_restore(state):
+        termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, state)
+
+    def read_keys():
+        keys = []
+        while select.select([sys.stdin], [], [], 0)[0]:
+            data = os.read(sys.stdin.fileno(), 64)
+            if not data:
+                break  # EOF (piped input ended)
+            keys.extend(data.decode("utf-8", "ignore"))
+        return keys
+
+BAUD = 115200
+LIST_INTERVAL_S = 10.0     # slow "list" refresh heals any dropped bytes
+REDRAW_INTERVAL_S = 0.5
+PROBE_TIMEOUT_S = 2.5
+EVENT_LOG_LEN = 10
+
+# USB-serial bridge chips common on ESP32 dev boards
+KNOWN_VIDS = {0x10C4, 0x1A86, 0x0403, 0x303A, 0x067B}
+
+# The master answers "list" with JSON event lines; workers do not
+MASTER_MARKERS = (b'"ev"',)
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+CSI = "\x1b["
+RESET, BOLD, DIM = CSI + "0m", CSI + "1m", CSI + "2m"
+GREEN, YELLOW, CYAN, RED = CSI + "32m", CSI + "33m", CSI + "36m", CSI + "31m"
+
+
+def open_port(dev):
+    """Open without touching DTR/RTS so the board is not auto-reset."""
+    ser = serial.Serial()
+    ser.port = dev
+    ser.baudrate = BAUD
+    ser.timeout = 0
+    ser.dtr = False
+    ser.rts = False
+    ser.open()
+    ser.reset_input_buffer()
+    return ser
+
+
+def candidate_ports():
+    """USB-serial devices, most-likely-ESP32 first."""
+    found = []
+    for p in list_ports.comports():
+        dev = p.device
+        if sys.platform == "darwin":
+            if "Bluetooth" in dev or "debug" in dev:
+                continue
+            dev = dev.replace("/dev/tty.", "/dev/cu.")
+        score = 0
+        if p.vid in KNOWN_VIDS:
+            score += 2
+        if "usbserial" in dev.lower() or "USB" in (p.description or ""):
+            score += 1
+        if score:
+            found.append((score, dev))
+    return [dev for _, dev in sorted(found, key=lambda x: -x[0])]
+
+
+def probe(dev):
+    """True if the device answers 'list' like a IRL master."""
+    try:
+        ser = open_port(dev)
+    except (serial.SerialException, OSError):
+        return False
+    try:
+        ser.write(b"\r\nlist\r\n")
+        buf = b""
+        deadline = time.monotonic() + PROBE_TIMEOUT_S
+        while time.monotonic() < deadline:
+            chunk = ser.read(256)
+            if chunk:
+                buf += chunk
+                if any(m in buf for m in MASTER_MARKERS):
+                    return True
+            else:
+                time.sleep(0.05)
+        return False
+    except (serial.SerialException, OSError):
+        return False
+    finally:
+        ser.close()
+
+
+def fetch_broker_ca(cfg):
+    """Save the broker's certificate chain as the pinned CA bundle."""
+    import socket
+    import ssl
+    ctx = ssl._create_unverified_context()
+    with socket.create_connection((cfg["host"], cfg["port"]),
+                                  timeout=10) as sock:
+        with ctx.wrap_socket(sock, server_hostname=cfg["host"]) as s:
+            chain = s.get_unverified_chain()  # needs Python 3.13+
+    path = os.path.join(GATEWAY_DIR, cfg.get("tls_ca", "broker-ca.pem"))
+    with open(path, "w") as f:
+        f.write("".join(ssl.DER_cert_to_PEM_cert(der) for der in chain))
+    return path
+
+
+class MqttLink:
+    """Background MQTT bridge; safe to keep across serial reconnects."""
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.client = None
+        self.master_id = None
+        self.topic = None
+        self.state = "waiting for master id"
+        self.commands = deque()    # filled by the broker thread
+
+    def start(self, master_id):
+        """Connect (or reconnect under a new master id)."""
+        if self.client is not None:
+            if master_id == self.master_id:
+                return
+            self.stop()
+        self.master_id = master_id
+        self.topic = "%s/%s" % (self.cfg.get("base_topic", "irl"),
+                                master_id)
+        c = paho.Client(paho.CallbackAPIVersion.VERSION2,
+                        client_id="irl-gw-" + master_id)
+        c.username_pw_set(self.cfg["username"], self.cfg["password"])
+        if self.cfg.get("tls", True):
+            ca = self.cfg.get("tls_ca")
+            if ca and not os.path.isabs(ca):
+                ca = os.path.join(GATEWAY_DIR, ca)
+            c.tls_set(ca_certs=ca if ca and os.path.exists(ca) else None)
+            if self.cfg.get("tls_insecure"):
+                c.tls_insecure_set(True)
+        c.will_set(self.topic + "/status", "offline", retain=True)
+        c.on_connect = self._on_connect
+        c.on_disconnect = self._on_disconnect
+        c.on_message = self._on_message
+        c.reconnect_delay_set(1, 30)
+        self.state = "connecting"
+        c.connect_async(self.cfg["host"], self.cfg.get("port", 8883),
+                        keepalive=30)
+        c.loop_start()  # paho's own thread; auto-reconnects
+        self.client = c
+
+    def _on_connect(self, c, u, flags, rc, props=None):
+        if rc == 0:
+            self.state = "connected"
+            # QoS 2 = exactly once: LED commands are never lost or
+            # duplicated on the MQTT leg (publishers must use QoS 2
+            # as well - effective QoS is the lower of the two sides)
+            c.subscribe(self.topic + "/cmd", qos=2)
+            self.publish_status("online")
+        else:
+            self.state = "refused: %s" % rc
+
+    def _on_disconnect(self, c, u, flags, rc, props=None):
+        self.state = "reconnecting"
+
+    def _on_message(self, c, u, msg):
+        cmd = msg.payload.decode("utf-8", "replace").strip()[:64]
+        if cmd:
+            self.commands.append(cmd.splitlines()[0])
+
+    def _pub(self, subtopic, payload, retain=False):
+        if self.client is not None:
+            self.client.publish(self.topic + "/" + subtopic, payload,
+                                retain=retain)
+
+    def publish_event(self, e):
+        e = dict(e, ts=int(time.time()))
+        self._pub("events", json.dumps(e))
+
+    def publish_worker(self, w, online):
+        self._pub("workers/" + w["id"],
+                  json.dumps({"id": w["id"], "name": w["name"],
+                              "led": 1 if w["led"] else 0,
+                              "temp": w["temp"], "online": online,
+                              "ts": int(time.time())}),
+                  retain=True)
+
+    def publish_fleet(self, workers, master_temp=None):
+        """Retained inventory snapshot - one message tells a server
+        everything this master currently has. temp is the master's
+        own chip temperature (None until the first eol carries it)."""
+        now = time.monotonic()
+        self._pub("fleet",
+                  json.dumps({"master": self.master_id,
+                              "temp": master_temp, "n": len(workers),
+                              "workers": [
+                                  {"id": w["id"], "name": w["name"],
+                                   "led": 1 if w["led"] else 0,
+                                   "temp": w["temp"],
+                                   "ago": int(now - w["seen_at"])}
+                                  for w in workers],
+                              "ts": int(time.time())}),
+                  retain=True)
+
+    def publish_status(self, status):
+        self._pub("status", status, retain=True)
+
+    def stop(self):
+        if self.client is not None:
+            self.publish_status("offline")
+            self.client.loop_stop()
+            self.client.disconnect()
+            self.client = None
+
+
+def find_master(explicit=None):
+    """Block until a master is found; returns an open Serial."""
+    announced = False
+    while True:
+        ports = [explicit] if explicit else candidate_ports()
+        for dev in ports:
+            if explicit or probe(dev):
+                try:
+                    ser = open_port(dev)
+                    ser.write(b"\r\n")  # flush any half-typed line
+                    return ser
+                except (serial.SerialException, OSError):
+                    pass
+        if not announced:
+            what = explicit or "a IRL master board"
+            print("Waiting for %s (checking every 2 s, Ctrl-C quits)..."
+                  % what)
+            announced = True
+        time.sleep(2)
+
+
+class Gateway:
+    def __init__(self, ser, mqtt=None, touch_only=False):
+        self.ser = ser
+        self.mqtt = mqtt
+        self.touch_only = touch_only
+        self.master_id = "?"
+        self.master_temp = None    # master's own chip temp, from ready/eol
+        self.workers = {}          # id -> dict(id name index led temp seen_at)
+        self.events = deque(maxlen=EVENT_LOG_LEN)
+        self.rx = b""
+        self.input_line = ""
+        self.connected_at = time.monotonic()
+        self.last_list = 0.0
+        self.dirty = True
+
+    def event(self, text, color="", kind="info"):
+        # kind: "info" (fleet chatter), "touch", or "alert" (lifecycle,
+        # errors, command feedback). --touch hides plain "info" lines.
+        if self.touch_only and kind == "info":
+            return
+        stamp = time.strftime("%H:%M:%S")
+        self.events.append("%s%s  %s%s" % (color, stamp, text, RESET))
+        self.dirty = True
+
+    def whois(self, wid):
+        w = self.workers.get(wid)
+        return w["name"] if w else wid
+
+    # ---- master JSON protocol ---------------------------------------
+    def touch_worker(self, wid, **fields):
+        w = self.workers.setdefault(
+            wid, {"id": wid, "name": wid, "index": 0, "led": False,
+                  "temp": 0})
+        w["seen_at"] = time.monotonic()
+        w.update(fields)
+        self.dirty = True
+
+    def set_master_id(self, mid):
+        self.master_id = mid
+        if self.mqtt is not None:
+            self.mqtt.start(mid)
+
+    def handle_event(self, e):
+        ev = e.get("ev")
+        if ev == "ready":
+            self.workers.clear()
+            self.set_master_id(e.get("id", "?"))
+            self.master_temp = e.get("temp", self.master_temp)
+            self.event("master %s ready on channel %s"
+                       % (self.master_id, e.get("ch")), CYAN, kind="alert")
+            self.last_list = 0  # refresh the table right away
+        elif ev in ("row", "join"):
+            self.touch_worker(e["id"], name=e.get("name", e["id"]),
+                              led=e["led"] == 1, temp=e["temp"])
+            if ev == "row":
+                self.workers[e["id"]]["index"] = e["i"]
+                self.workers[e["id"]]["seen_at"] = (
+                    time.monotonic() - e.get("ago", 0))
+            else:
+                self.event("joined %s (%s) - %s known"
+                           % (e.get("name"), e["id"], e.get("n")), GREEN)
+        elif ev == "state":
+            state = e["led"] == 1
+            known = self.workers.get(e["id"])
+            if known and known["led"] != state:
+                self.event("[%s] LED %s" % (self.whois(e["id"]),
+                                            "ON" if state else "OFF"),
+                           GREEN if state else DIM)
+            self.touch_worker(e["id"], led=state, temp=e["temp"])
+        elif ev == "lost":
+            self.workers.pop(e["id"], None)
+            self.event("lost %s (%s)" % (e.get("name"), e["id"]), RED)
+        elif ev == "touch":
+            if e["val"] == 1:
+                self.event("[%s] touch started" % self.whois(e["id"]),
+                           YELLOW, kind="touch")
+            else:
+                self.event("[%s] touch released after %.1f s"
+                           % (self.whois(e["id"]), e.get("ms", 0) / 1000),
+                           YELLOW, kind="touch")
+        elif ev == "sent":
+            led = "ON" if e["led"] == 1 else "OFF"
+            if e.get("to") == "all":
+                self.event("master sent LED %s to all (%s known)"
+                           % (led, e.get("n")))
+            else:
+                self.event("master sent LED %s to %s" % (led, e.get("to")))
+        elif ev == "ack":
+            self.event("[%s] LED %s confirmed (%s tr%s)"
+                       % (self.whois(e["id"]),
+                          "ON" if e["led"] == 1 else "OFF", e["tries"],
+                          "y" if e["tries"] == 1 else "ies"), GREEN)
+        elif ev == "cmd_timeout":
+            self.event("[%s] NO confirmation for LED %s - worker "
+                       "unreachable?" % (self.whois(e["id"]),
+                                         "ON" if e["led"] == 1 else "OFF"),
+                       RED)
+        elif ev in ("err", "notice"):
+            self.event("%s: %s" % (ev, e.get("msg")),
+                       RED if ev == "err" else YELLOW, kind="alert")
+        elif ev == "eol":
+            # carries the master's id and own chip temp, so we learn
+            # both without a reboot and keep the temp fresh
+            if self.master_id == "?" and e.get("id"):
+                self.set_master_id(e["id"])
+            if e.get("temp") is not None and e["temp"] != self.master_temp:
+                self.master_temp = e["temp"]
+                self.dirty = True
+        else:
+            self.event("unknown event: %r" % (e,), DIM)
+
+        if self.mqtt is not None and self.mqtt.client is not None:
+            self.mqtt.publish_event(e)
+            if ev in ("row", "join", "state") and e.get("id") in self.workers:
+                self.mqtt.publish_worker(self.workers[e["id"]], True)
+            elif ev == "lost":
+                self.mqtt.publish_worker(
+                    {"id": e["id"], "name": e.get("name", e["id"]),
+                     "led": False, "temp": 0}, False)
+            if ev in ("ready", "join", "lost", "eol"):
+                self.mqtt.publish_fleet(
+                    sorted(self.workers.values(),
+                           key=lambda w: (w["index"] or 9999, w["id"])),
+                    self.master_temp)
+
+    def handle_line(self, line):
+        if line.startswith("{"):
+            try:
+                self.handle_event(json.loads(line))
+                return
+            except (ValueError, KeyError):
+                pass
+        self.event(line, DIM)  # ROM boot chatter, tracebacks, ...
+
+    def feed(self, data):
+        self.rx += data
+        while b"\n" in self.rx:
+            raw, self.rx = self.rx.split(b"\n", 1)
+            line = raw.decode("utf-8", "replace").strip("\r ")
+            if line:
+                self.handle_line(line)
+
+    # ---- keyboard ---------------------------------------------------
+    def handle_key(self, ch):
+        if ch in ("\r", "\n"):
+            cmd = self.input_line.strip()
+            self.input_line = ""
+            self.dirty = True
+            if cmd in ("q", "quit", "exit"):
+                raise KeyboardInterrupt
+            if cmd:
+                self.ser.write(cmd.encode() + b"\r\n")
+                self.event("sent: " + cmd, CYAN, kind="alert")
+        elif ch in ("\x7f", "\x08"):
+            self.input_line = self.input_line[:-1]
+            self.dirty = True
+        elif ch.isprintable():
+            self.input_line += ch
+            self.dirty = True
+
+    # ---- dashboard --------------------------------------------------
+    def render(self):
+        now = time.monotonic()
+        up = int(now - self.connected_at)
+        out = [CSI + "2J" + CSI + "H"]
+        mq = "off" if self.mqtt is None else self.mqtt.state
+        mode = "  %stouch-only%s" % (YELLOW, RESET) if self.touch_only else ""
+        mtemp = ("" if self.master_temp is None
+                 else " %d C" % self.master_temp)
+        out.append(
+            "%sIRL Gateway%s  master %s%s  %s  MQTT: %s  up %d:%02d:%02d%s\n"
+            % (BOLD, RESET, self.master_id, mtemp, self.ser.port, mq,
+               up // 3600, up % 3600 // 60, up % 60, mode))
+        out.append(DIM + "-" * 72 + RESET + "\n")
+        out.append("%s %-3s %-13s %-19s %-4s %-6s %s%s\n" % (
+            BOLD, "#", "ID", "NAME", "LED", "TEMP", "SEEN", RESET))
+        rows = sorted(self.workers.values(),
+                      key=lambda w: (w["index"] or 9999, w["id"]))
+        if not rows:
+            out.append(DIM + "  (no workers heard from yet)" + RESET + "\n")
+        for w in rows:
+            ago = int(now - w["seen_at"])
+            led = (GREEN + "ON " if w["led"] else DIM + "OFF") + RESET
+            stale = RED if ago > 16 else ""
+            out.append(" %-3s %-13s %-19s %s  %3d C  %s%d s ago%s\n" % (
+                w["index"] or "?", w["id"], w["name"][:19], led,
+                w["temp"], stale, ago, RESET))
+        out.append(DIM + "-" * 72 + RESET + "\n")
+        for e in self.events:
+            out.append(" %s\n" % e)
+        out.append("\n%scommand (list | on | off | on <n|id> | q):%s > %s" % (
+            DIM, RESET, self.input_line))
+        sys.stdout.write("".join(out))
+        sys.stdout.flush()
+        self.dirty = False
+
+    # ---- main loop --------------------------------------------------
+    def run(self, interactive):
+        """Portable poll loop - no select() on the serial port, so it
+        runs on Windows (COM ports) as well as macOS/Linux."""
+        self.event("connected to %s" % self.ser.port, GREEN, kind="alert")
+        last_draw = 0.0
+        while True:
+            data = self.ser.read(4096)
+            if data:
+                self.feed(data)
+            if interactive:
+                for ch in read_keys():
+                    self.handle_key(ch)
+            while self.mqtt is not None and self.mqtt.commands:
+                cmd = self.mqtt.commands.popleft()
+                self.ser.write(cmd.encode() + b"\r\n")
+                self.event("mqtt cmd: " + cmd, CYAN, kind="alert")
+            now = time.monotonic()
+            if now - self.last_list > LIST_INTERVAL_S:
+                self.last_list = now
+                self.ser.write(b"list\r\n")
+            if interactive:
+                if self.dirty or now - last_draw > REDRAW_INTERVAL_S:
+                    last_draw = now
+                    self.render()
+            else:
+                while self.events:
+                    print(ANSI_RE.sub("", self.events.popleft()),
+                          flush=True)
+            time.sleep(0.03)
+
+
+def load_mqtt():
+    """MqttLink from gateway/mqtt.json, or None when not configured."""
+    if not os.path.exists(MQTT_CONFIG):
+        return None
+    with open(MQTT_CONFIG) as f:
+        cfg = json.load(f)
+    if paho is None:
+        sys.exit("gateway/mqtt.json exists but paho-mqtt is missing -\n"
+                 "  pip install -r gateway/requirements.txt")
+    return MqttLink(cfg)
+
+
+def main():
+    args = sys.argv[1:]
+    if args and args[0] == "--fetch-ca":
+        with open(MQTT_CONFIG) as f:
+            path = fetch_broker_ca(json.load(f))
+        print("Pinned broker CA chain saved to", path)
+        return
+    touch_only = "--touch" in args
+    args = [a for a in args if a != "--touch"]
+    explicit = args[0] if args else None
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    mqtt = load_mqtt()
+
+    kb_state = None
+    if interactive:
+        kb_state = keyboard_init()
+
+    try:
+        while True:
+            ser = find_master(explicit)
+            gw = Gateway(ser, mqtt, touch_only)
+            if mqtt is not None and mqtt.client is not None:
+                mqtt.publish_status("online")
+            try:
+                gw.run(interactive)
+            except (serial.SerialException, OSError):
+                ser.close()
+                if mqtt is not None:
+                    mqtt.publish_status("master-offline")
+                print("\nSerial connection lost - looking for the master "
+                      "again...")
+                time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if mqtt is not None:
+            mqtt.stop()
+        if interactive:
+            keyboard_restore(kb_state)
+        print("\nGateway stopped.")
+
+
+if __name__ == "__main__":
+    main()
+GATEWAY_PY_EOF
+
+cat > /opt/irl-gateway/broker-ca.pem <<'GATEWAY_CA_EOF'
+-----BEGIN CERTIFICATE-----
+MIIDRjCCAi6gAwIBAgIUT43iBu8opvCtIY/+AF+oaXs7DNowDQYJKoZIhvcNAQEL
+BQAwITEfMB0GA1UEAwwWbXF0dC50aGVpcmxuZXR3b3JrLmNvbTAeFw0yNjA4MTcw
+ODEwMTlaFw0zNjA4MTQwODEwMTlaMCExHzAdBgNVBAMMFm1xdHQudGhlaXJsbmV0
+d29yay5jb20wggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDPmQCJlUwT
+KFo/18aslJS1buKFX97DdYMrkEV6Aog/zjiVW6gN1qRMShcsFt81ojNlgicaluOr
+sFhdlnWF9Ks8PQ0DIoypN0ti4gHl9XPcS2HPsaKG/x5mXeSeV6JOD6CtiFcoGNxs
+FcoYcYUgx+jPM9Zy61P/3rCbgPv2E7eKyUcO0xWC9RN9qEb3PJs/kGsRBxCePOOp
+fqSYxz6NEQ2ZTLoSpha/6NxAog3+DFNLKDM90OtGkOfztVLrADT5B8HUpv9Yf5Kb
+HlYlDuQY4IQ9vl0Ubij9OgKnAf1/f+bja9oNUD7d8YsPt/m6D5tOgnYldqecnINt
+qtMqIKcberBJAgMBAAGjdjB0MB0GA1UdDgQWBBTaPvHdOKUDnS8Qdw8rBqUChv2j
+bDAfBgNVHSMEGDAWgBTaPvHdOKUDnS8Qdw8rBqUChv2jbDAPBgNVHRMBAf8EBTAD
+AQH/MCEGA1UdEQQaMBiCFm1xdHQudGhlaXJsbmV0d29yay5jb20wDQYJKoZIhvcN
+AQELBQADggEBAEVYGrxXhMRk0WdVSCXzEHraNu49w+Kj6BNA2b99XHtT5mt22iXn
+EVuD1qhT5Y9I82wZerzZyjU7Ma0GvFna9NAujnnsxi1gpxBqcMA6WY+RgO+JEuun
+ZAbby9pGsKiWYeV+uPdIQAqsRCfdap5b+QyDfWFXo2kW7LUxA/6zcQdoZWXSHo+t
+pZurE873Sm6F56mS/3VANFgcrKGAyspuht9ISr6pFv5sTV3G3euvwDzUQ7DuaXwn
+N/K2aZPxO1VRxEWmKUpb5nR/aBLQUBbdJ/U9hWEL24nUjx59T+/lcSM7myyEemHt
+DTt1ziw6WWKuaJMzrNYH2cbpdcxvF4g3m5M=
+-----END CERTIFICATE-----
+GATEWAY_CA_EOF
+
+# tighten the secret's permissions if an admin already placed it
+[ -f /opt/irl-gateway/mqtt.json ] && chmod 600 /opt/irl-gateway/mqtt.json
+
+# deps live in a venv: paho-mqtt >= 2.0 is newer than the apt package
+if [ ! -x /opt/irl-gateway/venv/bin/python3 ]; then
+  apt-get install -y -qq python3-venv >/dev/null 2>&1 || true
+  python3 -m venv /opt/irl-gateway/venv 2>/dev/null \
+    || log "WARNING: could not create the gateway venv; irl-gateway will not start"
+fi
+if [ -x /opt/irl-gateway/venv/bin/pip ]; then
+  /opt/irl-gateway/venv/bin/pip install --quiet "pyserial>=3.5" "paho-mqtt>=2.0" \
+    || log "WARNING: gateway dependency install failed; irl-gateway may not start"
+fi
+
+cat > /etc/systemd/system/irl-gateway.service <<'EOF'
+[Unit]
+Description=IRL Gateway (USB master board -> MQTT bridge)
+After=network-online.target
+Wants=network-online.target
+# secrets gate: without the per-device broker config the service stays off
+ConditionPathExists=/opt/irl-gateway/mqtt.json
+
+[Service]
+ExecStart=/opt/irl-gateway/venv/bin/python3 /opt/irl-gateway/gateway.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# --- 13. Auto-update: reinstall whenever the published install.sh changes -----
 # The device fetches $BASE_URL/install.sh on boot and every hour, compares
 # its hash to the one recorded at install time, and re-runs the script if it
 # changed. Any edit to the script (new app version, config fix, ...) rolls
@@ -701,7 +1391,7 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-# --- 13. Remove leftovers from previous installs ------------------------------
+# --- 14. Remove leftovers from previous installs ------------------------------
 # Anything the previous install created that this version of the script no
 # longer ships (see MANAGED_FILES) gets disabled and deleted here, so
 # services/helpers deleted from this script disappear from every device.
@@ -728,6 +1418,7 @@ systemctl enable --now irl-player-hotkey >/dev/null
 systemctl enable --now irl-player-update.timer >/dev/null
 systemctl enable --now irl-player-watchdog >/dev/null
 systemctl enable --now irl-player-netwatch >/dev/null
+systemctl enable --now irl-gateway >/dev/null 2>&1 || true
 
 log "Starting kiosk ..."
 systemctl restart "$SERVICE_NAME"

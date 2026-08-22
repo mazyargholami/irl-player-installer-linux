@@ -59,6 +59,7 @@ redirect() {  # rewrite absolute system paths into $ROOT
       -e "s|/boot/firmware/cmdline.txt|$ROOT/boot/none|g" \
       -e "s|/boot/cmdline.txt|$ROOT/boot/cmdline.txt|g" \
       -e "s|/opt/irl-player/IRLPlayer|$ROOT/opt/IRLPlayer|g" \
+      -e "s|/opt/irl-gateway|$ROOT/opt/irl-gateway|g" \
       -e "s|/usr/share/icons|$ROOT/usr/share/icons|g" \
       "$1"
 }
@@ -83,10 +84,14 @@ for f in usr/local/bin/irl-kiosk-run usr/local/bin/irl-kiosk-toggle usr/local/bi
          etc/systemd/system/irl-player-update.timer etc/systemd/system/irl-player-watchdog.service \
          etc/systemd/system/irl-player-netwatch.service \
          etc/systemd/system.conf.d/irl-watchdog.conf \
+         etc/systemd/system/irl-gateway.service \
+         opt/irl-gateway/gateway.py opt/irl-gateway/broker-ca.pem \
          etc/apt/apt.conf.d/52irl-unattended-upgrades etc/apt/apt.conf.d/60irl-auto-upgrades \
          etc/irl-player/manifest etc/irl-player/installer.sha256; do
   check "[ -e '$ROOT/$f' ]" "created $f"
 done
+check "! [ -e '$ROOT/opt/irl-gateway/mqtt.json' ]" "gateway secret (mqtt.json) is NOT shipped by the installer"
+check "grep -q 'ConditionPathExists=$ROOT/opt/irl-gateway/mqtt.json' '$ROOT/etc/systemd/system/irl-gateway.service'" "gateway service is gated on the per-device secret"
 check "grep -q 'enable --now irl-player-update.timer' '$ROOT/systemctl.log'" "update timer enabled"
 check "grep -q 'restart irl-player-kiosk' '$ROOT/systemctl.log'" "kiosk (re)started"
 check "[ -L '$ROOT/etc/irl-player/icons/default/cursors' ]" "transparent-cursor symlink created"
@@ -98,6 +103,7 @@ for s in irl-kiosk-run irl-kiosk-toggle irl-update irl-watchdog irl-netwatch; do
   check "bash -n '$ROOT/usr/local/bin/$s'" "bash -n $s"
 done
 check "PYTHONPYCACHEPREFIX='$E2E/pycache' python3 -m py_compile '$ROOT/usr/local/bin/irl-hotkeyd'" "python syntax irl-hotkeyd"
+check "PYTHONPYCACHEPREFIX='$E2E/pycache' python3 -m py_compile '$ROOT/opt/irl-gateway/gateway.py'" "python syntax gateway.py"
 check "grep -q 'BASE_URL=\"http://localhost:$PORT\"' '$ROOT/usr/local/bin/irl-update'" "BASE_URL baked into irl-update"
 check "grep -q 'ExecStart=/usr/bin/cage' '$ROOT/etc/systemd/system/irl-player-kiosk.service'" "kiosk unit ExecStart"
 check "grep -q 'OnUnitActiveSec=1h' '$ROOT/etc/systemd/system/irl-player-update.timer'" "timer runs hourly"
@@ -247,11 +253,12 @@ check "[ -s '$ROOT/var/lib/irl-player/last-netwatch-reboot' ]" "reboot timestamp
 echo "== 11. Uninstall removes everything =="
 bash "$SITE/uninstall.sh" > "$E2E/uninstall.log" 2>&1 && ok "uninstall.sh runs clean" || bad "uninstall.sh errored"
 check "! grep -q WARNING '$E2E/uninstall.log'" "uninstall reported no warnings"
-LEFT=$(find "$ROOT/etc/systemd/system" "$ROOT/etc/systemd/system.conf.d" "$ROOT/etc/apt/apt.conf.d" "$ROOT/usr/local/bin" "$ROOT/etc/irl-player" "$ROOT/var/lib/irl-player" -type f 2>/dev/null | wc -l)
+LEFT=$(find "$ROOT/etc/systemd/system" "$ROOT/etc/systemd/system.conf.d" "$ROOT/etc/apt/apt.conf.d" "$ROOT/usr/local/bin" "$ROOT/etc/irl-player" "$ROOT/var/lib/irl-player" "$ROOT/opt/irl-gateway" -type f 2>/dev/null | wc -l)
 check "[ '$LEFT' = 0 ]" "no installed files left behind"
 check "grep -q 'disable --now irl-player-update.timer' '$ROOT/systemctl.log'" "update timer disabled on uninstall"
 check "grep -q 'disable --now irl-player-watchdog' '$ROOT/systemctl.log'" "watchdog disabled on uninstall"
 check "grep -q 'disable --now irl-player-netwatch' '$ROOT/systemctl.log'" "netwatch disabled on uninstall"
+check "grep -q 'disable --now irl-gateway' '$ROOT/systemctl.log'" "gateway disabled on uninstall"
 
 echo; echo "RESULT: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]
