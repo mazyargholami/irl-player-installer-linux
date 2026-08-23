@@ -27,6 +27,9 @@
 #   9. Canary rollout: `sudo touch /etc/irl-player/canary` marks a device to
 #      take every update immediately; all others follow FLEET_DELAY_HOURS
 #      later
+#  10. Fleet screen switch: screen.txt on the website ("0" or "1") turns
+#      every display off or on within a couple of minutes; the player keeps
+#      running underneath
 #
 set -euo pipefail
 
@@ -74,11 +77,14 @@ MANAGED_FILES="
 /usr/local/bin/irl-telemetry
 /etc/systemd/system/irl-player-telemetry.service
 /etc/systemd/system/irl-player-telemetry.timer
+/usr/local/bin/irl-screen
+/etc/systemd/system/irl-player-screen.service
+/etc/systemd/system/irl-player-screen.timer
 "
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=19
+INSTALLER_REV=20
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -1435,6 +1441,83 @@ RandomizedDelaySec=10min
 WantedBy=timers.target
 EOF
 
+# --- 13b. Fleet screen switch: screen.txt turns every display off/on ----------
+# The website serves screen.txt ("0" = screens off, "1" = normal). A 1-minute
+# timer fetches it and applies the value with wlr-randr. Turning the output
+# off (rather than painting black or stopping the player) keeps the player
+# running for an instant wake AND keeps the freeze watchdog quiet: with no
+# output, grim fails to capture, which the watchdog treats as "not my
+# business" (verified on the canary: grim exits 1 "no wl_output").
+# Fail-safe: only an explicit "0" blanks — a missing file, fetch error, or
+# offline device always means ON.
+log "Installing fleet screen switch (screen.txt on the website) ..."
+
+cat > /usr/local/bin/irl-screen <<'EOF'
+#!/usr/bin/env bash
+# IRL Player screen switch. Fetches screen.txt from the website every minute:
+# "0" = all displays off (player keeps running), anything else = displays on.
+set -u
+SCREEN_URL="${IRL_SCREEN_URL:-@BASE_URL@/screen.txt}"
+KIOSK_USER=irlplayer
+STATE_FILE=/var/lib/irl-player/screen-state
+
+# Pages' CDN caches ~10 min; the cache-buster keeps the switch near-real-time.
+val="$(curl -fsSL --max-time 15 "${SCREEN_URL}?t=$(date +%s)" 2>/dev/null | head -c 8 | tr -d '[:space:]')"
+want=on
+[ "$val" = "0" ] && want=off
+
+# The compositor's socket only exists while the kiosk is up; in normal/console
+# mode (Ctrl+Alt+P) there is nothing to blank — leave the screen alone.
+uid="$(id -u "$KIOSK_USER" 2>/dev/null)" || exit 0
+xdg="/run/user/$uid"
+sock="$(find "$xdg" -maxdepth 1 -name 'wayland-*' ! -name '*.lock' 2>/dev/null | head -1)"
+[ -n "$sock" ] || exit 0
+
+wlr() {
+  XDG_RUNTIME_DIR="$xdg" WAYLAND_DISPLAY="${sock##*/}" \
+    setpriv --reuid "$KIOSK_USER" --regid "$KIOSK_USER" --init-groups wlr-randr "$@"
+}
+
+# Re-apply every run, not only on change: a kiosk restart re-enables outputs,
+# and an idempotent --on/--off keeps the device converged on the published
+# value. All outputs are toggled — CM5/Pi 5 may have both HDMI ports in use.
+outputs="$(wlr 2>/dev/null | awk '/^[^ ]/{print $1}')"
+[ -n "$outputs" ] || exit 0
+for out in $outputs; do
+  wlr --output "$out" "--$want" 2>/dev/null || true
+done
+
+prev="$(cat "$STATE_FILE" 2>/dev/null || echo "")"
+if [ "$want" != "$prev" ]; then
+  mkdir -p "$(dirname "$STATE_FILE")"
+  echo "$want" > "$STATE_FILE"
+  echo "screen switch: displays $want (screen.txt=${val:-unreachable})"
+fi
+EOF
+chmod +x /usr/local/bin/irl-screen
+sed -i "s|@BASE_URL@|$BASE_URL|" /usr/local/bin/irl-screen
+
+cat > /etc/systemd/system/irl-player-screen.service <<'EOF'
+[Unit]
+Description=IRL Player screen switch (applies screen.txt from the website)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/irl-screen
+EOF
+
+cat > /etc/systemd/system/irl-player-screen.timer <<'EOF'
+[Unit]
+Description=IRL Player screen switch check (every minute)
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=1min
+
+[Install]
+WantedBy=timers.target
+EOF
+
 # --- 14. Auto-update: reinstall whenever the published install.sh changes -----
 # The device fetches $BASE_URL/install.sh on boot and every hour, compares
 # its hash to the one recorded at install time, and re-runs the script if it
@@ -1584,6 +1667,7 @@ systemctl enable --now irl-player-netwatch >/dev/null
 systemctl enable --now irl-gateway >/dev/null 2>&1 || true
 systemctl try-restart irl-gateway >/dev/null 2>&1 || true
 systemctl enable --now irl-player-telemetry.timer >/dev/null 2>&1 || true
+systemctl enable --now irl-player-screen.timer >/dev/null 2>&1 || true
 
 log "Starting kiosk ..."
 systemctl restart "$SERVICE_NAME"
