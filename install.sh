@@ -78,7 +78,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=18
+INSTALLER_REV=19
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -681,6 +681,24 @@ GATEWAY_DIR = os.path.dirname(os.path.abspath(__file__))
 MQTT_CONFIG = os.path.join(GATEWAY_DIR, "mqtt.json")
 
 
+def get_device_serial():
+    """Hardware serial of the machine the gateway runs on (the "Serial"
+    line of /proc/cpuinfo on a Raspberry Pi) - the same value the IRL
+    kiosk devices report to the config panel, so the panel can join a
+    fleet's MQTT data to its device row. Empty string on non-Pi hosts."""
+    try:
+        with open("/proc/cpuinfo") as f:
+            for line in f:
+                if line.startswith("Serial"):
+                    return line.split(":", 1)[1].strip().lower()
+    except OSError:
+        pass
+    return ""
+
+
+DEVICE_SERIAL = get_device_serial()
+
+
 # ---- cross-platform keyboard (dashboard input) ----------------------
 if os.name == "nt":
     import msvcrt
@@ -884,17 +902,23 @@ class MqttLink:
                   json.dumps({"id": w["id"], "name": w["name"],
                               "led": 1 if w["led"] else 0,
                               "temp": w["temp"], "online": online,
+                              "device_serial": DEVICE_SERIAL,
                               "ts": int(time.time())}),
                   retain=True)
 
-    def publish_fleet(self, workers, master_temp=None):
+    def publish_fleet(self, workers, master_temp=None, channel=None):
         """Retained inventory snapshot - one message tells a server
         everything this master currently has. temp is the master's
-        own chip temperature (None until the first eol carries it)."""
+        own chip temperature (None until the first eol carries it).
+        device_serial identifies the HOST machine (Pi) this gateway
+        runs on, "" elsewhere; ch is the master's radio channel (from
+        its ready event) - additive fields, protocol-compatible."""
         now = time.monotonic()
         self._pub("fleet",
                   json.dumps({"master": self.master_id,
                               "temp": master_temp, "n": len(workers),
+                              "ch": channel,
+                              "device_serial": DEVICE_SERIAL,
                               "workers": [
                                   {"id": w["id"], "name": w["name"],
                                    "led": 1 if w["led"] else 0,
@@ -943,6 +967,7 @@ class Gateway:
         self.touch_only = touch_only
         self.master_id = "?"
         self.master_temp = None    # master's own chip temp, from ready/eol
+        self.channel = None        # radio channel, from the ready event
         self.workers = {}          # id -> dict(id name index led temp seen_at)
         self.events = deque(maxlen=EVENT_LOG_LEN)
         self.rx = b""
@@ -984,6 +1009,7 @@ class Gateway:
             self.workers.clear()
             self.set_master_id(e.get("id", "?"))
             self.master_temp = e.get("temp", self.master_temp)
+            self.channel = e.get("ch", self.channel)
             self.event("master %s ready on channel %s"
                        % (self.master_id, e.get("ch")), CYAN, kind="alert")
             self.last_list = 0  # refresh the table right away
@@ -1059,7 +1085,7 @@ class Gateway:
                 self.mqtt.publish_fleet(
                     sorted(self.workers.values(),
                            key=lambda w: (w["index"] or 9999, w["id"])),
-                    self.master_temp)
+                    self.master_temp, self.channel)
 
     def handle_line(self, line):
         if line.startswith("{"):
