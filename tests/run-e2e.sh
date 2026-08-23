@@ -70,6 +70,7 @@ redirect "$REPO/uninstall.sh" > "$SITE/uninstall.sh"
 ln -s "$REPO/packages" "$SITE/packages"
 # stands in for the Cloudflare config service (query strings are ignored)
 printf '{"host": "test-broker", "port": 8883}\n' > "$SITE/mqtt-config"
+cp "$REPO/screen.txt" "$SITE/screen.txt"
 python3 -m http.server "$PORT" --directory "$SITE" >/dev/null 2>&1 &
 SERVER=$!
 until curl -sf -o /dev/null "http://localhost:$PORT/install.sh"; do :; done
@@ -94,6 +95,9 @@ for f in usr/local/bin/irl-kiosk-run usr/local/bin/irl-kiosk-toggle usr/local/bi
          usr/local/bin/irl-telemetry \
          etc/systemd/system/irl-player-telemetry.service \
          etc/systemd/system/irl-player-telemetry.timer \
+         usr/local/bin/irl-screen \
+         etc/systemd/system/irl-player-screen.service \
+         etc/systemd/system/irl-player-screen.timer \
          etc/apt/apt.conf.d/52irl-unattended-upgrades etc/apt/apt.conf.d/60irl-auto-upgrades \
          etc/irl-player/manifest etc/irl-player/installer.sha256; do
   check "[ -e '$ROOT/$f' ]" "created $f"
@@ -113,7 +117,7 @@ grep -q 'consoleblank=0' "$ROOT/boot/cmdline.txt" && ok "console blanking disabl
 c=$(grep -c 'consoleblank=0' "$ROOT/boot/cmdline.txt"); [ "$c" = 1 ] && ok "consoleblank added exactly once" || bad "consoleblank duplicated"
 
 echo "== 2. Generated scripts are valid =="
-for s in irl-kiosk-run irl-kiosk-toggle irl-update irl-watchdog irl-netwatch irl-gateway-config irl-telemetry; do
+for s in irl-kiosk-run irl-kiosk-toggle irl-update irl-watchdog irl-netwatch irl-gateway-config irl-telemetry irl-screen; do
   check "bash -n '$ROOT/usr/local/bin/$s'" "bash -n $s"
 done
 check "PYTHONPYCACHEPREFIX='$E2E/pycache' python3 -m py_compile '$ROOT/usr/local/bin/irl-hotkeyd'" "python syntax irl-hotkeyd"
@@ -121,6 +125,9 @@ check "PYTHONPYCACHEPREFIX='$E2E/pycache' python3 -m py_compile '$ROOT/opt/irl-g
 check "grep -q 'BASE_URL=\"http://localhost:$PORT\"' '$ROOT/usr/local/bin/irl-update'" "BASE_URL baked into irl-update"
 check "grep -q 'ExecStart=/usr/bin/cage' '$ROOT/etc/systemd/system/irl-player-kiosk.service'" "kiosk unit ExecStart"
 check "grep -q 'OnUnitActiveSec=1h' '$ROOT/etc/systemd/system/irl-player-update.timer'" "timer runs hourly"
+check "grep -q \"SCREEN_URL=.*http://localhost:$PORT/screen.txt\" '$ROOT/usr/local/bin/irl-screen'" "screen.txt URL baked into irl-screen"
+check "grep -q 'OnUnitActiveSec=1min' '$ROOT/etc/systemd/system/irl-player-screen.timer'" "screen switch checks every minute"
+check "grep -q 'enable --now irl-player-screen.timer' '$ROOT/systemctl.log'" "screen switch timer enabled"
 
 echo "== 3. Auto-update: no change -> silent no-op =="
 H1=$(cat "$ROOT/etc/irl-player/installer.sha256")
@@ -264,6 +271,39 @@ check "grep -q 'restart NetworkManager' '$ROOT/simlog2'" "NetworkManager restart
 check "grep -q REBOOT '$ROOT/simlog2'" "still offline: device reboot triggered"
 check "[ -s '$ROOT/var/lib/irl-player/last-netwatch-reboot' ]" "reboot timestamp persisted (2h backoff)"
 
+echo "== 10b. Fleet screen switch: screen.txt drives displays off/on =="
+# Reuses section 9's simbin stubs (id -> uid 1000, setpriv -> exec) and its
+# fake wayland socket in run/user/1000. wlr-randr is stubbed to report two
+# HDMI outputs, so multi-display handling is covered too.
+check "[ \"\$(tr -d '[:space:]' < '$REPO/screen.txt')\" = 1 ]" "repo screen.txt defaults to screens ON"
+cat > "$ROOT/simbin/wlr-randr" <<STUB
+#!/bin/sh
+if [ \$# -eq 0 ]; then
+  printf 'HDMI-A-1 "x"\n  Enabled: yes\nHDMI-A-2 "y"\n  Enabled: yes\n'
+else
+  echo "\$@" >> "$ROOT/simlog-screen"
+fi
+STUB
+chmod +x "$ROOT/simbin/wlr-randr"
+: > "$ROOT/simlog-screen"
+echo 0 > "$SITE/screen.txt"
+PATH="$ROOT/simbin:$PATH" "$ROOT/usr/local/bin/irl-screen" > "$E2E/screen.out" 2>&1
+check "grep -q -- '--output HDMI-A-1 --off' '$ROOT/simlog-screen'" "screen.txt=0: first display off"
+check "grep -q -- '--output HDMI-A-2 --off' '$ROOT/simlog-screen'" "screen.txt=0: second display off too"
+check "[ \"\$(cat '$ROOT/var/lib/irl-player/screen-state')\" = off ]" "state recorded: off"
+check "grep -q 'displays off' '$E2E/screen.out'" "state change logged"
+: > "$ROOT/simlog-screen"
+echo 1 > "$SITE/screen.txt"
+PATH="$ROOT/simbin:$PATH" "$ROOT/usr/local/bin/irl-screen" > /dev/null 2>&1
+check "grep -q -- '--output HDMI-A-1 --on' '$ROOT/simlog-screen'" "screen.txt=1: displays back on"
+check "[ \"\$(cat '$ROOT/var/lib/irl-player/screen-state')\" = on ]" "state recorded: on"
+: > "$ROOT/simlog-screen"
+rm "$SITE/screen.txt"
+PATH="$ROOT/simbin:$PATH" "$ROOT/usr/local/bin/irl-screen" > /dev/null 2>&1
+check "grep -q -- '--on' '$ROOT/simlog-screen'" "missing screen.txt: fail-safe ON"
+check "! grep -q -- '--off' '$ROOT/simlog-screen'" "missing screen.txt: never blanks"
+cp "$REPO/screen.txt" "$SITE/screen.txt"
+
 echo "== 11. Uninstall removes everything =="
 bash "$SITE/uninstall.sh" > "$E2E/uninstall.log" 2>&1 && ok "uninstall.sh runs clean" || bad "uninstall.sh errored"
 check "! grep -q WARNING '$E2E/uninstall.log'" "uninstall reported no warnings"
@@ -274,6 +314,7 @@ check "grep -q 'disable --now irl-player-watchdog' '$ROOT/systemctl.log'" "watch
 check "grep -q 'disable --now irl-player-netwatch' '$ROOT/systemctl.log'" "netwatch disabled on uninstall"
 check "grep -q 'disable --now irl-gateway' '$ROOT/systemctl.log'" "gateway disabled on uninstall"
 check "grep -q 'disable --now irl-player-telemetry.timer' '$ROOT/systemctl.log'" "telemetry timer disabled on uninstall"
+check "grep -q 'disable --now irl-player-screen.timer' '$ROOT/systemctl.log'" "screen switch timer disabled on uninstall"
 
 echo; echo "RESULT: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]

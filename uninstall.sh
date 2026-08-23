@@ -20,6 +20,7 @@ systemctl disable --now irl-player-watchdog 2>/dev/null || true
 systemctl disable --now irl-player-netwatch 2>/dev/null || true
 systemctl disable --now irl-gateway 2>/dev/null || true
 systemctl disable --now irl-player-telemetry.timer 2>/dev/null || true
+systemctl disable --now irl-player-screen.timer 2>/dev/null || true
 rm -f "/etc/systemd/system/$SERVICE_NAME.service" \
       /etc/systemd/system/irl-player-hotkey.service \
       /etc/systemd/system/irl-player-update.service \
@@ -40,6 +41,9 @@ rm -f "/etc/systemd/system/$SERVICE_NAME.service" \
       /usr/local/bin/irl-telemetry \
       /etc/systemd/system/irl-player-telemetry.service \
       /etc/systemd/system/irl-player-telemetry.timer \
+      /usr/local/bin/irl-screen \
+      /etc/systemd/system/irl-player-screen.service \
+      /etc/systemd/system/irl-player-screen.timer \
       /var/lock/irl-update.lock
 # /opt/irl-gateway includes the per-device mqtt.json credentials — uninstall
 # means "back to normal", so the secret goes too
