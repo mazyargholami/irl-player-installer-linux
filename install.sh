@@ -71,11 +71,14 @@ MANAGED_FILES="
 /opt/irl-gateway/gateway.py
 /opt/irl-gateway/broker-ca.pem
 /usr/local/bin/irl-gateway-config
+/usr/local/bin/irl-telemetry
+/etc/systemd/system/irl-player-telemetry.service
+/etc/systemd/system/irl-player-telemetry.timer
 "
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=17
+INSTALLER_REV=18
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -1307,7 +1310,106 @@ RuntimeMaxSec=1d
 WantedBy=multi-user.target
 EOF
 
-# --- 13. Auto-update: reinstall whenever the published install.sh changes -----
+# --- 13. Telemetry: hourly device-health snapshot to the fleet panel ----------
+# Every device POSTs a small JSON snapshot (identity, versions, health, wifi)
+# to the config panel on boot and hourly, so the whole fleet is visible and
+# manageable in one place. Fire-and-forget: a failed post never affects
+# anything. No secrets are sent.
+log "Installing telemetry reporter (hourly device snapshot to the fleet panel) ..."
+
+cat > /usr/local/bin/irl-telemetry <<'TELEMETRY_EOF'
+#!/usr/bin/env bash
+# Posts a device-health snapshot to the fleet config panel.
+# Fire-and-forget: any failure is silent. `irl-telemetry --print` shows the
+# payload without sending (debugging).
+set -u
+URL="https://iot-config.theirlnetwork.com/telemetry"
+
+T_SERIAL="$(awk '/^Serial/{print $3}' /proc/cpuinfo 2>/dev/null)" || true
+[ -n "${T_SERIAL:-}" ] || exit 0
+T_HOSTNAME="$(hostname 2>/dev/null)" || true
+T_MODEL="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null)" || true
+T_OS="$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME")" || true
+T_REV="@INSTALLER_REV@"
+T_APP="$(dpkg-query -W -f '${Version}' irl-player 2>/dev/null)" || true
+T_CANARY=false; [ -e /etc/irl-player/canary ] && T_CANARY=true
+T_UPTIME="$(awk '{print int($1)}' /proc/uptime 2>/dev/null)" || true
+T_CPUTEMP="$(awk '{printf "%.1f", $1/1000}' /sys/class/thermal/thermal_zone0/temp 2>/dev/null)" || true
+T_DISKFREE="$(df -Pk / 2>/dev/null | awk 'NR==2{print int($4/1024)}')" || true
+T_MEMFREE="$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null)" || true
+WIFI="$(iw dev wlan0 link 2>/dev/null)" || true
+T_SSID="$(printf '%s' "${WIFI:-}" | awk -F': ' '/SSID:/{print $2; exit}')" || true
+T_SIGNAL="$(printf '%s' "${WIFI:-}" | awk '/signal:/{print $2; exit}')" || true
+T_KIOSK="$(systemctl is-active irl-player-kiosk 2>/dev/null)" || true
+T_GATEWAY="$(systemctl is-active irl-gateway 2>/dev/null)" || true
+T_IP="$(hostname -I 2>/dev/null | awk '{print $1}')" || true
+export T_SERIAL T_HOSTNAME T_MODEL T_OS T_REV T_APP T_CANARY T_UPTIME \
+       T_CPUTEMP T_DISKFREE T_MEMFREE T_SSID T_SIGNAL T_KIOSK T_GATEWAY T_IP
+
+PAYLOAD="$(python3 - <<'PY' 2>/dev/null
+import json, os
+def num(v, cast):
+    try:
+        return cast(v)
+    except (TypeError, ValueError):
+        return None
+e = os.environ.get
+print(json.dumps({
+    "serial": e("T_SERIAL", ""),
+    "hostname": e("T_HOSTNAME") or None,
+    "model": e("T_MODEL") or None,
+    "os": e("T_OS") or None,
+    "installer_rev": num(e("T_REV"), int),
+    "app_version": e("T_APP") or None,
+    "canary": e("T_CANARY") == "true",
+    "uptime_s": num(e("T_UPTIME"), int),
+    "cpu_temp_c": num(e("T_CPUTEMP"), float),
+    "disk_free_mb": num(e("T_DISKFREE"), int),
+    "mem_free_mb": num(e("T_MEMFREE"), int),
+    "wifi_ssid": e("T_SSID") or None,
+    "wifi_signal_dbm": num(e("T_SIGNAL"), int),
+    "kiosk_active": e("T_KIOSK") == "active",
+    "gateway_active": e("T_GATEWAY") == "active",
+    "local_ip": e("T_IP") or None,
+}))
+PY
+)" || true
+[ -n "${PAYLOAD:-}" ] || exit 0
+if [ "${1:-}" = "--print" ]; then
+  printf '%s\n' "$PAYLOAD"
+  exit 0
+fi
+curl -fsS --max-time 15 -H "Content-Type: application/json" \
+  -d "$PAYLOAD" "$URL" >/dev/null 2>&1 || true
+exit 0
+TELEMETRY_EOF
+chmod +x /usr/local/bin/irl-telemetry
+sed -i "s|@INSTALLER_REV@|$INSTALLER_REV|" /usr/local/bin/irl-telemetry
+
+cat > /etc/systemd/system/irl-player-telemetry.service <<'EOF'
+[Unit]
+Description=IRL Player telemetry report (device-health snapshot to the fleet panel)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/irl-telemetry
+EOF
+
+cat > /etc/systemd/system/irl-player-telemetry.timer <<'EOF'
+[Unit]
+Description=IRL Player telemetry report (on boot and hourly)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1h
+# spread devices out so they don't all report at the same second
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target
+EOF
+
+# --- 14. Auto-update: reinstall whenever the published install.sh changes -----
 # The device fetches $BASE_URL/install.sh on boot and every hour, compares
 # its hash to the one recorded at install time, and re-runs the script if it
 # changed. Any edit to the script (new app version, config fix, ...) rolls
@@ -1426,7 +1528,7 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-# --- 14. Remove leftovers from previous installs ------------------------------
+# --- 15. Remove leftovers from previous installs ------------------------------
 # Anything the previous install created that this version of the script no
 # longer ships (see MANAGED_FILES) gets disabled and deleted here, so
 # services/helpers deleted from this script disappear from every device.
@@ -1455,6 +1557,7 @@ systemctl enable --now irl-player-watchdog >/dev/null
 systemctl enable --now irl-player-netwatch >/dev/null
 systemctl enable --now irl-gateway >/dev/null 2>&1 || true
 systemctl try-restart irl-gateway >/dev/null 2>&1 || true
+systemctl enable --now irl-player-telemetry.timer >/dev/null 2>&1 || true
 
 log "Starting kiosk ..."
 systemctl restart "$SERVICE_NAME"
