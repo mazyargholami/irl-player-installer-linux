@@ -61,6 +61,7 @@ redirect() {  # rewrite absolute system paths into $ROOT
       -e "s|/opt/irl-player/IRLPlayer|$ROOT/opt/IRLPlayer|g" \
       -e "s|/opt/irl-gateway|$ROOT/opt/irl-gateway|g" \
       -e "s|https://iot-config.theirlnetwork.com/mqtt-config|http://localhost:$PORT/mqtt-config|g" \
+      -e "s|https://iot-config.theirlnetwork.com/telemetry|http://localhost:$PORT/telemetry|g" \
       -e "s|/usr/share/icons|$ROOT/usr/share/icons|g" \
       "$1"
 }
@@ -90,6 +91,9 @@ for f in usr/local/bin/irl-kiosk-run usr/local/bin/irl-kiosk-toggle usr/local/bi
          etc/systemd/system/irl-gateway.service \
          opt/irl-gateway/gateway.py opt/irl-gateway/broker-ca.pem \
          usr/local/bin/irl-gateway-config \
+         usr/local/bin/irl-telemetry \
+         etc/systemd/system/irl-player-telemetry.service \
+         etc/systemd/system/irl-player-telemetry.timer \
          etc/apt/apt.conf.d/52irl-unattended-upgrades etc/apt/apt.conf.d/60irl-auto-upgrades \
          etc/irl-player/manifest etc/irl-player/installer.sha256; do
   check "[ -e '$ROOT/$f' ]" "created $f"
@@ -98,6 +102,10 @@ check "! [ -e '$ROOT/opt/irl-gateway/mqtt.json' ]" "installer itself writes no c
 check "! grep -q 'MQTT_JSON_ENC\|GWK=' '$SITE/install.sh'" "no credential blob or passphrase left in the installer"
 check "'$ROOT/usr/local/bin/irl-gateway-config'" "config helper fetches the MQTT config"
 check "python3 -c \"import json; c=json.load(open('$ROOT/opt/irl-gateway/mqtt.json')); assert c['host']\"" "fetched config is valid JSON with a broker host"
+check "'$ROOT/usr/local/bin/irl-telemetry'" "telemetry reporter runs clean (fire-and-forget)"
+TOUT=$("$ROOT/usr/local/bin/irl-telemetry" --print 2>/dev/null || true)
+check "[ -z '$TOUT' ] || printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"serial\"]'" "telemetry --print yields valid JSON (or nothing without a serial)"
+check "grep -q \"T_REV=.$REV.\" '$ROOT/usr/local/bin/irl-telemetry'" "installer revision baked into the telemetry payload"
 check "grep -q 'enable --now irl-player-update.timer' '$ROOT/systemctl.log'" "update timer enabled"
 check "grep -q 'restart irl-player-kiosk' '$ROOT/systemctl.log'" "kiosk (re)started"
 check "[ -L '$ROOT/etc/irl-player/icons/default/cursors' ]" "transparent-cursor symlink created"
@@ -105,7 +113,7 @@ grep -q 'consoleblank=0' "$ROOT/boot/cmdline.txt" && ok "console blanking disabl
 c=$(grep -c 'consoleblank=0' "$ROOT/boot/cmdline.txt"); [ "$c" = 1 ] && ok "consoleblank added exactly once" || bad "consoleblank duplicated"
 
 echo "== 2. Generated scripts are valid =="
-for s in irl-kiosk-run irl-kiosk-toggle irl-update irl-watchdog irl-netwatch irl-gateway-config; do
+for s in irl-kiosk-run irl-kiosk-toggle irl-update irl-watchdog irl-netwatch irl-gateway-config irl-telemetry; do
   check "bash -n '$ROOT/usr/local/bin/$s'" "bash -n $s"
 done
 check "PYTHONPYCACHEPREFIX='$E2E/pycache' python3 -m py_compile '$ROOT/usr/local/bin/irl-hotkeyd'" "python syntax irl-hotkeyd"
@@ -265,6 +273,7 @@ check "grep -q 'disable --now irl-player-update.timer' '$ROOT/systemctl.log'" "u
 check "grep -q 'disable --now irl-player-watchdog' '$ROOT/systemctl.log'" "watchdog disabled on uninstall"
 check "grep -q 'disable --now irl-player-netwatch' '$ROOT/systemctl.log'" "netwatch disabled on uninstall"
 check "grep -q 'disable --now irl-gateway' '$ROOT/systemctl.log'" "gateway disabled on uninstall"
+check "grep -q 'disable --now irl-player-telemetry.timer' '$ROOT/systemctl.log'" "telemetry timer disabled on uninstall"
 
 echo; echo "RESULT: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]
