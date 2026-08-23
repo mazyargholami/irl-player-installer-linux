@@ -75,7 +75,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=16
+INSTALLER_REV=17
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -1242,21 +1242,21 @@ DTt1ziw6WWKuaJMzrNYH2cbpdcxvF4g3m5M=
 -----END CERTIFICATE-----
 GATEWAY_CA_EOF
 
-# The MQTT config is fetched over HTTPS from the fleet config service (a
-# Cloudflare Worker) at every gateway start, identified by the device's
-# hardware serial. No credentials live in this script. The device keeps the
-# last good copy, so a network blip or config-service outage never stops a
-# previously-configured gateway. Rotation = edit the MQTT_JSON value in the
-# Cloudflare dashboard (devices refresh within a day via RuntimeMaxSec, or
-# instantly on systemctl restart irl-gateway). Access control = the
-# ALLOWLIST variable in the dashboard; see README "Cloudflare Worker config
-# service".
+# The MQTT config is fetched over HTTPS from the fleet config panel (the
+# self-hosted service at iot-config.theirlnetwork.com, source in the
+# irl-microcontroller repo, config-panel/) at every gateway start,
+# identified by the device's hardware serial. No credentials live in this
+# script. The device keeps the last good copy, so a network blip or
+# config-service outage never stops a previously-configured gateway.
+# Unknown devices auto-register as "pending" in the panel; approve them
+# there. Rotation = edit the config in the panel (devices refresh within a
+# day via RuntimeMaxSec, or instantly on systemctl restart irl-gateway).
 cat > /usr/local/bin/irl-gateway-config <<'GWCONF_EOF'
 #!/usr/bin/env bash
 # Fetches the fleet MQTT config for the IRL gateway from the config service.
 set -u
 OUT=/opt/irl-gateway/mqtt.json
-URL="https://config.theirlnetwork.com/mqtt-config"
+URL="https://iot-config.theirlnetwork.com/mqtt-config"
 SERIAL="$(awk '/^Serial/{print $3}' /proc/cpuinfo 2>/dev/null || true)"
 umask 077
 if curl -fsS --max-time 20 "${URL}?serial=${SERIAL}" -o "$OUT.tmp" 2>/dev/null \

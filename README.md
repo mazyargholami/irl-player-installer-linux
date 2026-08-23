@@ -226,8 +226,8 @@ harmlessly when no board is attached.
 
 The broker credentials (`mqtt.json`) are **not stored in this repo at
 all**. The service's `ExecStartPre` runs `irl-gateway-config`, which
-fetches the config over HTTPS from the Cloudflare Worker below
-(identifying the device by its hardware serial) and writes
+fetches the config over HTTPS from the fleet config panel (identifying
+the device by its hardware serial) and writes
 `/opt/irl-gateway/mqtt.json` (root-only, mode 600). The device keeps the
 last good copy, so an offline boot or a config-service outage never stops
 a previously-configured gateway; a device that has never been served (not
@@ -236,99 +236,44 @@ unit's `RuntimeMaxSec=1d` restarts the gateway daily, so a rotated config
 or fresh approval takes effect within a day on its own (or instantly with
 `sudo systemctl restart irl-gateway`).
 
-### Cloudflare Worker config service
+### The fleet config panel
 
-A Worker at `https://config.theirlnetwork.com/mqtt-config` serves the
-config over HTTPS, with an optional per-device allowlist. Setup, done
-once in the Cloudflare dashboard:
+Devices fetch from the self-hosted config panel:
 
-1. **Workers & Pages → Create → Create Worker** ("Start with Hello
-   World!"), name it `irl-config`, deploy, then **Edit code**, replace
-   everything with the handler below, and **Deploy**:
+```
+https://iot-config.theirlnetwork.com/mqtt-config?serial=<device-serial>
+```
 
-   ```js
-   export default {
-     async fetch(request, env) {
-       const url = new URL(request.url);
-       if (url.pathname !== "/mqtt-config")
-         return new Response("not found", { status: 404 });
+Approved device → HTTP 200 with the config JSON; pending/rejected →
+`403 not approved`; any other path → 404. **The source and its own docs
+live in the `irl-microcontroller` repo (`config-panel/`)** — Django +
+Docker Compose, running behind Cloudflare's proxy.
 
-       const serial = (url.searchParams.get("serial") || "").trim();
-       const allow = String(env.ALLOWLIST || "")
-         .split(",").map(s => s.trim()).filter(Boolean);
-       const approved = !allow.length || allow.includes(serial);
-       // shows up in Observability → Logs: which device asked, and the verdict
-       console.log(`serial=${serial || "(none)"} ${approved ? "served" : "refused"}`);
-       if (!approved)
-         return new Response("not approved", { status: 403 });
+Day-to-day operation happens in the panel's web UI at
+https://iot-config.theirlnetwork.com/ :
 
-       const cfg = typeof env.MQTT_JSON === "string"
-         ? env.MQTT_JSON
-         : JSON.stringify(env.MQTT_JSON);
-       return new Response(cfg, { headers: { "content-type": "application/json" } });
-     }
-   };
-   ```
-2. **Settings → Variables and Secrets**. ⚠️ **After changing ANY variable
-   (`MQTT_JSON`, `ALLOWLIST`, ...), the change is only staged — it does
-   NOT reach the running Worker until a new version is deployed.** The
-   reliable way: open **Edit code** (top right), change nothing, and
-   click **Deploy**. Verify on the **Bindings** tab (must list the
-   variables) or just test the URL from step 4 — until you deploy, the
-   Worker keeps serving with the old values.
-   - `MQTT_JSON` — the full contents of `mqtt.json`. Type **JSON** works
-     (Cloudflare then hands the code a parsed object — hence the
-     stringify above); **Secret** keeps the value hidden in the
-     dashboard; plain **Text** also works.
-   - `ALLOWLIST` — type **Text** (comma-separated serials, e.g.
-     `0aa6bd2679151255,10000000abc123`). Empty = open to all; non-empty =
-     only listed devices are served. A device's serial:
-     `grep Serial /proc/cpuinfo`.
-3. **Settings → Domains & Routes → Add → Custom domain** →
-   `config.theirlnetwork.com` (DNS + HTTPS are automatic).
-4. Test: `curl "https://config.theirlnetwork.com/mqtt-config?serial=test"`
-   must return the JSON.
+- **Approving a device:** an unknown serial auto-registers as *pending*
+  the first time it asks (unapproved devices retry about once a minute,
+  so a new device appears within a minute of powering on). Open the
+  panel, find it in the pending list, click **Approve** — it gets served
+  on its next retry. Nothing is ever done on the device itself. A
+  device's serial: `grep Serial /proc/cpuinfo`.
+- **Rejecting** keeps stray/unknown serials out of the pending list.
+- **Rotation:** edit the config JSON in the panel. Devices re-fetch at
+  every gateway start and auto-restart daily, so every approved device
+  has the new credential **within 24 hours** (instant per device with
+  `sudo systemctl restart irl-gateway`). For a zero-downtime broker
+  rotation, overlap: add the new credential on the broker while the old
+  one still works → update the panel → wait a day → remove the old
+  credential from the broker. No device ever loses its connection.
+- **Revoking a device:** set it to rejected **and** rotate the
+  credential — the device keeps its cached copy until the rotation makes
+  it worthless.
 
-With the Worker in place: **rotation** = edit `MQTT_JSON` in the
-dashboard (then Edit code → Deploy; no repo change, no device touched);
-**security switch** = fill `ALLOWLIST` — unapproved devices get 403
-immediately, approved ones never notice.
-
-**How fast a rotation reaches the fleet:** devices re-fetch at every
-gateway start and auto-restart daily (`RuntimeMaxSec=1d`), so every
-approved device has the new credential **within 24 hours** (instant per
-device with `sudo systemctl restart irl-gateway`). For a zero-downtime
-broker rotation, overlap: add the new credential on the broker while the
-old one still works → update `MQTT_JSON` in Cloudflare → wait a day →
-remove the old credential from the broker. No device ever loses its
-connection.
-
-**Approving a device** (once `ALLOWLIST` is in use): open the Worker's
-**Observability → Logs** — every request logs a message like
-`serial=0aa6bd2679151255 served` (or `... refused`), so a new device
-announces its own serial by asking. Copy that serial, append it to
-`ALLOWLIST` (comma-separated), Deploy. The device picks the config up on
-its next try (it retries about once a minute until served); nothing is
-done on the device itself.
-
-With a large fleet the log stream gets busy — don't scroll it, **filter
-it**. A bare word typed in the search bar does NOT match; query the
-`message` field explicitly: **Query Builder → Filters → + Add → field
-`message` → operator "contains" → value `refused`**. Two gotchas in
-Cloudflare's filter UI: the operators are shown as **icons** — "contains"
-is the **magnifying-glass (search) icon** — and the value must be just
-the single word `refused`, not the full message (a full message like
-`serial=test refused` only matches that one device; "contains refused"
-matches every refusal from every serial). Save it via **Saved Queries**
-as "awaiting approval". Mind the **time-range
-picker** — a correct query still shows nothing if the events are older
-than the selected window — and searched logs can lag the live stream by
-a minute or two. The filtered view shows exactly the devices waiting for
-approval (an unapproved device without a cached config retries every
-minute, so it stays near the top). Approved devices fetch only at
-gateway start and then daily, so `served` lines stay rare. Workers Logs
-keeps a few days of history — approve devices as they appear rather than
-mining old logs.
+(History: the config service was previously a Cloudflare Worker at
+`config.theirlnetwork.com` — retired after the fleet converged on the
+panel; see git history of this section for its setup if ever needed
+again.)
 
 ## Continuous integration
 

@@ -60,7 +60,7 @@ redirect() {  # rewrite absolute system paths into $ROOT
       -e "s|/boot/cmdline.txt|$ROOT/boot/cmdline.txt|g" \
       -e "s|/opt/irl-player/IRLPlayer|$ROOT/opt/IRLPlayer|g" \
       -e "s|/opt/irl-gateway|$ROOT/opt/irl-gateway|g" \
-      -e "s|https://config.theirlnetwork.com/mqtt-config|http://localhost:$PORT/mqtt-config|g" \
+      -e "s|https://iot-config.theirlnetwork.com/mqtt-config|http://localhost:$PORT/mqtt-config|g" \
       -e "s|/usr/share/icons|$ROOT/usr/share/icons|g" \
       "$1"
 }
