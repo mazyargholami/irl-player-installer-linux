@@ -84,7 +84,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=20
+INSTALLER_REV=21
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -1346,7 +1346,10 @@ EOF
 # Every device POSTs a small JSON snapshot (identity, versions, health, wifi)
 # to the config panel on boot and hourly, so the whole fleet is visible and
 # manageable in one place. Fire-and-forget: a failed post never affects
-# anything. No secrets are sent.
+# anything. The snapshot also carries the player's CMS device token (resolved
+# at report time, see below), so the panel can join a device row to its CMS
+# identity. That token is a credential: it travels only device -> panel over
+# HTTPS inside this POST and is never committed to this public repo.
 log "Installing telemetry reporter (hourly device snapshot to the fleet panel) ..."
 
 cat > /usr/local/bin/irl-telemetry <<'TELEMETRY_EOF'
@@ -1375,8 +1378,30 @@ T_SIGNAL="$(printf '%s' "${WIFI:-}" | awk '/signal:/{print $2; exit}')" || true
 T_KIOSK="$(systemctl is-active irl-player-kiosk 2>/dev/null)" || true
 T_GATEWAY="$(systemctl is-active irl-gateway 2>/dev/null)" || true
 T_IP="$(hostname -I 2>/dev/null | awk '{print $1}')" || true
+
+# Player identity: pairing UUID + cached screen name from the Flutter app's
+# shared_preferences, and the CMS device token. The token is NOT stored on
+# disk, so resolve it exactly the way the player does: ask the ad server
+# (API_URL, from the player's bundled .env) for this device_id's external_id.
+# All best-effort - an unpaired or offline device just omits these three fields.
+PREFS="/home/irlplayer/.local/share/IRLPlayer/shared_preferences.json"
+PLAYER_ENV="/opt/irl-player/data/flutter_assets/.env"
+T_DEVICE_ID=""; T_SCREEN=""; T_DEVICE_TOKEN=""
+if [ -r "$PREFS" ]; then
+  T_DEVICE_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("flutter.device_id") or "")' "$PREFS" 2>/dev/null)" || true
+  T_SCREEN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("flutter.screen_identity") or "")' "$PREFS" 2>/dev/null)" || true
+fi
+if [ -n "${T_DEVICE_ID:-}" ] && [ -r "$PLAYER_ENV" ]; then
+  API_URL="$(awk -F= '/^API_URL=/{sub(/^API_URL=/,""); gsub(/[\r"]/,""); print; exit}' "$PLAYER_ENV")" || true
+  if [ -n "${API_URL:-}" ]; then
+    T_DEVICE_TOKEN="$(curl -fsS --max-time 5 "$API_URL/api/v1/status/$T_DEVICE_ID" 2>/dev/null \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin).get("external_id") or "")' 2>/dev/null)" || true
+  fi
+fi
+
 export T_SERIAL T_HOSTNAME T_MODEL T_OS T_REV T_APP T_CANARY T_UPTIME \
-       T_CPUTEMP T_DISKFREE T_MEMFREE T_SSID T_SIGNAL T_KIOSK T_GATEWAY T_IP
+       T_CPUTEMP T_DISKFREE T_MEMFREE T_SSID T_SIGNAL T_KIOSK T_GATEWAY T_IP \
+       T_DEVICE_ID T_SCREEN T_DEVICE_TOKEN
 
 PAYLOAD="$(python3 - <<'PY' 2>/dev/null
 import json, os
@@ -1403,6 +1428,9 @@ print(json.dumps({
     "kiosk_active": e("T_KIOSK") == "active",
     "gateway_active": e("T_GATEWAY") == "active",
     "local_ip": e("T_IP") or None,
+    "device_id": e("T_DEVICE_ID") or None,
+    "screen_identity": e("T_SCREEN") or None,
+    "device_token": e("T_DEVICE_TOKEN") or None,
 }))
 PY
 )" || true
