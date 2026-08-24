@@ -23,8 +23,14 @@ mkdir -p "$ROOT"/{etc/systemd/system,usr/local/bin,usr/share/icons/transparent/c
 
 # --- fake device state --------------------------------------------------------
 printf 'Raspberry Pi 4 Model B Rev 1.4' > "$ROOT/proc/model"
+printf 'processor\t: 0\nSerial\t\t: 10000000abcd1234\nModel\t\t: Raspberry Pi 4 Model B Rev 1.4\n' > "$ROOT/proc/cpuinfo"
 echo "console=serial0,115200 console=tty1 root=PARTUUID=x rootfstype=ext4" > "$ROOT/boot/cmdline.txt"
 printf '#!/bin/sh\ntrue\n' > "$ROOT/opt/IRLPlayer" && chmod +x "$ROOT/opt/IRLPlayer"
+# player state: pairing UUID + cached screen name (shared_preferences), and the
+# bundled .env whose API_URL points telemetry at the ad server for the token.
+mkdir -p "$ROOT/home/irlplayer" "$ROOT/opt/player-assets"
+printf '{"flutter.device_id":"test-device-uuid-0001","flutter.is_registered":true,"flutter.screen_identity":"E2E Venue Screen 1"}\n' > "$ROOT/home/irlplayer/shared_preferences.json"
+printf 'API_URL=http://localhost:%s\nBACKEND_URL=http://localhost:%s\n' "$PORT" "$PORT" > "$ROOT/opt/player-assets/.env"
 
 # --- system tool stubs --------------------------------------------------------
 cat > "$ROOT/bin/systemctl" <<STUB
@@ -58,8 +64,11 @@ redirect() {  # rewrite absolute system paths into $ROOT
       -e "s|/etc/apt/apt.conf.d|$ROOT/etc/apt/apt.conf.d|g" \
       -e "s|/boot/firmware/cmdline.txt|$ROOT/boot/none|g" \
       -e "s|/boot/cmdline.txt|$ROOT/boot/cmdline.txt|g" \
+      -e "s|/opt/irl-player/data/flutter_assets|$ROOT/opt/player-assets|g" \
       -e "s|/opt/irl-player/IRLPlayer|$ROOT/opt/IRLPlayer|g" \
       -e "s|/opt/irl-gateway|$ROOT/opt/irl-gateway|g" \
+      -e "s|/home/irlplayer/.local/share/IRLPlayer|$ROOT/home/irlplayer|g" \
+      -e "s|/proc/cpuinfo|$ROOT/proc/cpuinfo|g" \
       -e "s|https://iot-config.theirlnetwork.com/mqtt-config|http://localhost:$PORT/mqtt-config|g" \
       -e "s|https://iot-config.theirlnetwork.com/telemetry|http://localhost:$PORT/telemetry|g" \
       -e "s|/usr/share/icons|$ROOT/usr/share/icons|g" \
@@ -70,6 +79,9 @@ redirect "$REPO/uninstall.sh" > "$SITE/uninstall.sh"
 ln -s "$REPO/packages" "$SITE/packages"
 # stands in for the Cloudflare config service (query strings are ignored)
 printf '{"host": "test-broker", "port": 8883}\n' > "$SITE/mqtt-config"
+# stands in for the player's ad server: GET /api/v1/status/<device_id> -> token
+mkdir -p "$SITE/api/v1/status"
+printf '{"session_code":"test-device-uuid-0001","external_id":"tok-e2e-abcdef","status":"approved"}\n' > "$SITE/api/v1/status/test-device-uuid-0001"
 cp "$REPO/screen.txt" "$SITE/screen.txt"
 python3 -m http.server "$PORT" --directory "$SITE" >/dev/null 2>&1 &
 SERVER=$!
@@ -110,6 +122,7 @@ check "'$ROOT/usr/local/bin/irl-telemetry'" "telemetry reporter runs clean (fire
 TOUT=$("$ROOT/usr/local/bin/irl-telemetry" --print 2>/dev/null || true)
 check "[ -z '$TOUT' ] || printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"serial\"]'" "telemetry --print yields valid JSON (or nothing without a serial)"
 check "grep -q \"T_REV=.$REV.\" '$ROOT/usr/local/bin/irl-telemetry'" "installer revision baked into the telemetry payload"
+check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"device_id\"]==\"test-device-uuid-0001\", d.get(\"device_id\"); assert d[\"screen_identity\"]==\"E2E Venue Screen 1\", d.get(\"screen_identity\"); assert d[\"device_token\"]==\"tok-e2e-abcdef\", d.get(\"device_token\")'" "telemetry resolves player device_id, screen_identity, and CMS device_token"
 check "grep -q 'enable --now irl-player-update.timer' '$ROOT/systemctl.log'" "update timer enabled"
 check "grep -q 'restart irl-player-kiosk' '$ROOT/systemctl.log'" "kiosk (re)started"
 check "[ -L '$ROOT/etc/irl-player/icons/default/cursors' ]" "transparent-cursor symlink created"
