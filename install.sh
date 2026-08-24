@@ -86,7 +86,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=23
+INSTALLER_REV=24
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -598,11 +598,13 @@ WantedBy=multi-user.target
 EOF
 
 # --- 12. IRL Gateway: USB master board -> MQTT bridge (opt-in per device) -----
-# The gateway code ships to every device, but the service only runs where
+# The gateway code ships to every device, but it only bridges where
 # /opt/irl-gateway/mqtt.json exists — that file holds the MQTT broker
-# credentials and is placed by hand once per device (root:root, chmod 600).
-# It is deliberately NOT written by this public script and never touched by
-# reinstalls, so secrets stay off the website and survive every auto-update.
+# credentials, fetched from the config panel by irl-gateway-config (below).
+# Neither mqtt.json nor config-ca.pem (the broker CA the gateway materializes
+# from the config's optional "tls_ca_pem" field) is ever written by this
+# public script or touched by reinstalls — secrets stay off the website and
+# both files survive every auto-update.
 # Source of truth for the code: irl-microcontroller repo, gateway/gateway.py.
 log "Installing IRL gateway (fetches its config from the fleet config service; unapproved devices request access automatically) ..."
 mkdir -p /opt/irl-gateway
@@ -821,6 +823,34 @@ def probe(dev):
         ser.close()
 
 
+def materialize_inline_ca(cfg):
+    """Write the config's inline CA to a local file paho can load.
+
+    "tls_ca_pem" is injected into the served config by the IRL Config
+    Panel when the operator uploads a CA for that broker - it rides in
+    over the panel's HTTPS fetch, so a fleet slice moved to an external
+    broker gets verified TLS with no file shipped out-of-band. It beats
+    the "tls_ca" file when present. Returns the path, or None when the
+    config carries no inline CA (or the file can't be written - the
+    normal tls_ca path then applies unchanged).
+    """
+    pem = cfg.get("tls_ca_pem")
+    if not isinstance(pem, str) or not pem.strip():
+        return None
+    path = os.path.join(GATEWAY_DIR, "config-ca.pem")
+    content = pem.strip() + "\n"
+    try:
+        if os.path.exists(path):
+            with open(path) as f:
+                if f.read() == content:
+                    return path
+        with open(path, "w") as f:
+            f.write(content)
+    except OSError:
+        return None
+    return path
+
+
 def fetch_broker_ca(cfg):
     """Save the broker's certificate chain as the pinned CA bundle."""
     import socket
@@ -860,9 +890,11 @@ class MqttLink:
                         client_id="irl-gw-" + master_id)
         c.username_pw_set(self.cfg["username"], self.cfg["password"])
         if self.cfg.get("tls", True):
-            ca = self.cfg.get("tls_ca")
-            if ca and not os.path.isabs(ca):
-                ca = os.path.join(GATEWAY_DIR, ca)
+            ca = materialize_inline_ca(self.cfg)  # panel-delivered CA wins
+            if not ca:
+                ca = self.cfg.get("tls_ca")
+                if ca and not os.path.isabs(ca):
+                    ca = os.path.join(GATEWAY_DIR, ca)
             c.tls_set(ca_certs=ca if ca and os.path.exists(ca) else None)
             if self.cfg.get("tls_insecure"):
                 c.tls_insecure_set(True)
