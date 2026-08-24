@@ -138,6 +138,9 @@ check "PYTHONPYCACHEPREFIX='$E2E/pycache' python3 -m py_compile '$ROOT/opt/irl-g
 check "grep -q 'BASE_URL=\"http://localhost:$PORT\"' '$ROOT/usr/local/bin/irl-update'" "BASE_URL baked into irl-update"
 check "grep -q 'ExecStart=/usr/bin/cage' '$ROOT/etc/systemd/system/irl-player-kiosk.service'" "kiosk unit ExecStart"
 check "grep -q 'OnUnitActiveSec=1h' '$ROOT/etc/systemd/system/irl-player-update.timer'" "timer runs hourly"
+# Persistent= breaks a monotonic-only timer's hourly re-arm on systemd 257 (it
+# collapses the next elapse to infinity once a stamp exists). Must stay absent.
+check "! grep -q '^Persistent=' '$ROOT/etc/systemd/system/irl-player-update.timer'" "update timer has no Persistent= (would kill the hourly re-check)"
 check "grep -q \"SCREEN_URL=.*http://localhost:$PORT/screen.txt\" '$ROOT/usr/local/bin/irl-screen'" "screen.txt URL baked into irl-screen"
 check "grep -q 'OnUnitActiveSec=1min' '$ROOT/etc/systemd/system/irl-player-screen.timer'" "screen switch checks every minute"
 check "grep -q 'enable --now irl-player-screen.timer' '$ROOT/systemctl.log'" "screen switch timer enabled"
