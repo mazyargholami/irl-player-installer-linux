@@ -110,6 +110,8 @@ for f in usr/local/bin/irl-kiosk-run usr/local/bin/irl-kiosk-toggle usr/local/bi
          usr/local/bin/irl-screen \
          etc/systemd/system/irl-player-screen.service \
          etc/systemd/system/irl-player-screen.timer \
+         etc/systemd/system/irl-player-reboot.service \
+         etc/systemd/system/irl-player-reboot.timer \
          etc/apt/apt.conf.d/52irl-unattended-upgrades etc/apt/apt.conf.d/60irl-auto-upgrades \
          etc/irl-player/manifest etc/irl-player/installer.sha256; do
   check "[ -e '$ROOT/$f' ]" "created $f"
@@ -144,6 +146,11 @@ check "! grep -q '^Persistent=' '$ROOT/etc/systemd/system/irl-player-update.time
 check "grep -q \"SCREEN_URL=.*http://localhost:$PORT/screen.txt\" '$ROOT/usr/local/bin/irl-screen'" "screen.txt URL baked into irl-screen"
 check "grep -q 'OnUnitActiveSec=1min' '$ROOT/etc/systemd/system/irl-player-screen.timer'" "screen switch checks every minute"
 check "grep -q 'enable --now irl-player-screen.timer' '$ROOT/systemctl.log'" "screen switch timer enabled"
+# weekly reboot: OnCalendar timer (immune to the monotonic trap), no Persistent=
+check "grep -q 'OnCalendar=Sun .* 04:00:00' '$ROOT/etc/systemd/system/irl-player-reboot.timer'" "weekly reboot scheduled Sun 04:00 local"
+check "! grep -q '^Persistent=' '$ROOT/etc/systemd/system/irl-player-reboot.timer'" "reboot timer has no Persistent= (no catch-up reboot after downtime)"
+check "grep -q 'systemctl reboot' '$ROOT/etc/systemd/system/irl-player-reboot.service'" "reboot service calls systemctl reboot"
+check "grep -q 'enable --now irl-player-reboot.timer' '$ROOT/systemctl.log'" "weekly reboot timer enabled"
 
 echo "== 3. Auto-update: no change -> silent no-op =="
 H1=$(cat "$ROOT/etc/irl-player/installer.sha256")
@@ -331,6 +338,7 @@ check "grep -q 'disable --now irl-player-netwatch' '$ROOT/systemctl.log'" "netwa
 check "grep -q 'disable --now irl-gateway' '$ROOT/systemctl.log'" "gateway disabled on uninstall"
 check "grep -q 'disable --now irl-player-telemetry.timer' '$ROOT/systemctl.log'" "telemetry timer disabled on uninstall"
 check "grep -q 'disable --now irl-player-screen.timer' '$ROOT/systemctl.log'" "screen switch timer disabled on uninstall"
+check "grep -q 'disable --now irl-player-reboot.timer' '$ROOT/systemctl.log'" "weekly reboot timer disabled on uninstall"
 
 echo; echo "RESULT: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]

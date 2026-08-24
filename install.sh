@@ -80,11 +80,13 @@ MANAGED_FILES="
 /usr/local/bin/irl-screen
 /etc/systemd/system/irl-player-screen.service
 /etc/systemd/system/irl-player-screen.timer
+/etc/systemd/system/irl-player-reboot.service
+/etc/systemd/system/irl-player-reboot.timer
 "
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=22
+INSTALLER_REV=23
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -1670,6 +1672,38 @@ RandomizedDelaySec=10min
 WantedBy=timers.target
 EOF
 
+# --- 14. Weekly scheduled reboot ---------------------------------------------
+# Kiosks never reboot on their own - unattended-upgrades has Automatic-Reboot
+# off on purpose - so a healthy device can sit for weeks without applying a
+# downloaded OS security update, and (before rev 22) without re-arming a broken
+# updater. A quiet weekly reboot at 04:00 local keeps the fleet self-healing
+# without anyone needing physical access to the remote sites. This is an
+# OnCalendar timer, which is immune to the monotonic-timer trap that disabled
+# the update timer - and it deliberately omits Persistent= so a device that was
+# powered off at 04:00 does NOT reboot the instant it comes back.
+cat > /etc/systemd/system/irl-player-reboot.service <<'EOF'
+[Unit]
+Description=IRL Player weekly scheduled reboot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl reboot
+EOF
+
+cat > /etc/systemd/system/irl-player-reboot.timer <<'EOF'
+[Unit]
+Description=IRL Player weekly scheduled reboot (Sun 04:00 local)
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00
+# spread the fleet across a window so sites on shared power/uplinks don't all
+# drop at the same instant
+RandomizedDelaySec=30min
+
+[Install]
+WantedBy=timers.target
+EOF
+
 # --- 15. Remove leftovers from previous installs ------------------------------
 # Anything the previous install created that this version of the script no
 # longer ships (see MANAGED_FILES) gets disabled and deleted here, so
@@ -1701,6 +1735,7 @@ systemctl enable --now irl-gateway >/dev/null 2>&1 || true
 systemctl try-restart irl-gateway >/dev/null 2>&1 || true
 systemctl enable --now irl-player-telemetry.timer >/dev/null 2>&1 || true
 systemctl enable --now irl-player-screen.timer >/dev/null 2>&1 || true
+systemctl enable --now irl-player-reboot.timer >/dev/null 2>&1 || true
 
 log "Starting kiosk ..."
 systemctl restart "$SERVICE_NAME"
@@ -1708,6 +1743,7 @@ systemctl restart "$SERVICE_NAME"
 log "Done. IRL Player will start fullscreen on every boot."
 log "Auto-update: checks $BASE_URL/install.sh hourly and reinstalls on change"
 log "Watchdog: frozen screen -> player restart, then reboot; OS hang -> hardware reboot"
+log "Reboot:  scheduled weekly (Sun 04:00 local) so OS updates apply and timers stay healthy"
 log "Hotkey:  Ctrl+Alt+P toggles kiosk (on top) <-> normal console/desktop"
 log "Logs:    journalctl -u $SERVICE_NAME -f"
 log "Stop:    sudo systemctl stop $SERVICE_NAME"
