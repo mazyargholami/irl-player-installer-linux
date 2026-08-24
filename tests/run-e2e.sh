@@ -77,8 +77,13 @@ redirect() {  # rewrite absolute system paths into $ROOT
 redirect "$REPO/install.sh"   > "$SITE/install.sh"
 redirect "$REPO/uninstall.sh" > "$SITE/uninstall.sh"
 ln -s "$REPO/packages" "$SITE/packages"
-# stands in for the Cloudflare config service (query strings are ignored)
-printf '{"host": "test-broker", "port": 8883}\n' > "$SITE/mqtt-config"
+# stands in for the config panel (query strings are ignored). tls_ca_pem is
+# the panel's optional inline broker CA: the fetch pipeline must carry it
+# through verbatim (unknown-key tolerance) and the gateway must pin it
+# (section 2b). tls_ca is also set to prove tls_ca_pem beats it.
+cat > "$SITE/mqtt-config" <<'FIXTURE'
+{"host": "test-broker", "port": 8883, "username": "e2e-user", "password": "e2e-pass", "tls": true, "tls_ca": "broker-ca.pem", "tls_insecure": false, "base_topic": "irl", "tls_ca_pem": "-----BEGIN CERTIFICATE-----\nE2E-FAKE-INLINE-CA\n-----END CERTIFICATE-----"}
+FIXTURE
 # stands in for the player's ad server: GET /api/v1/status/<device_id> -> token
 mkdir -p "$SITE/api/v1/status"
 printf '{"session_code":"test-device-uuid-0001","external_id":"tok-e2e-abcdef","status":"approved"}\n' > "$SITE/api/v1/status/test-device-uuid-0001"
@@ -120,6 +125,7 @@ check "! [ -e '$ROOT/opt/irl-gateway/mqtt.json' ]" "installer itself writes no c
 check "! grep -q 'MQTT_JSON_ENC\|GWK=' '$SITE/install.sh'" "no credential blob or passphrase left in the installer"
 check "'$ROOT/usr/local/bin/irl-gateway-config'" "config helper fetches the MQTT config"
 check "python3 -c \"import json; c=json.load(open('$ROOT/opt/irl-gateway/mqtt.json')); assert c['host']\"" "fetched config is valid JSON with a broker host"
+check "python3 -c \"import json; c=json.load(open('$ROOT/opt/irl-gateway/mqtt.json')); assert c['tls_ca_pem'].startswith('-----BEGIN')\"" "unknown config keys (tls_ca_pem) pass through the fetch verbatim"
 check "'$ROOT/usr/local/bin/irl-telemetry'" "telemetry reporter runs clean (fire-and-forget)"
 TOUT=$("$ROOT/usr/local/bin/irl-telemetry" --print 2>/dev/null || true)
 check "[ -z '$TOUT' ] || printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"serial\"]'" "telemetry --print yields valid JSON (or nothing without a serial)"
@@ -151,6 +157,69 @@ check "grep -q 'OnCalendar=Sun .* 04:00:00' '$ROOT/etc/systemd/system/irl-player
 check "! grep -q '^Persistent=' '$ROOT/etc/systemd/system/irl-player-reboot.timer'" "reboot timer has no Persistent= (no catch-up reboot after downtime)"
 check "grep -q 'systemctl reboot' '$ROOT/etc/systemd/system/irl-player-reboot.service'" "reboot service calls systemctl reboot"
 check "grep -q 'enable --now irl-player-reboot.timer' '$ROOT/systemctl.log'" "weekly reboot timer enabled"
+
+echo "== 2b. Gateway pins the panel-delivered CA (tls_ca_pem -> config-ca.pem) =="
+check "! [ -e '$ROOT/opt/irl-gateway/config-ca.pem' ]" "no config-ca.pem before the gateway first connects"
+# Drive the installed gateway.py directly: stub pyserial + paho, start an
+# MqttLink from the fetched mqtt.json, and verify the inline CA is written
+# to config-ca.pem (exact content) and pinned for TLS ahead of tls_ca.
+cat > "$E2E/tls-ca-pem-test.py" <<'PYEOF'
+import importlib.util, json, os, sys, types
+
+gwdir = sys.argv[1]
+
+serial_mod = types.ModuleType("serial")
+serial_mod.SerialException = type("SerialException", (Exception,), {})
+tools_mod = types.ModuleType("serial.tools")
+lp_mod = types.ModuleType("serial.tools.list_ports")
+lp_mod.comports = lambda: []
+serial_mod.tools = tools_mod
+tools_mod.list_ports = lp_mod
+sys.modules.update({"serial": serial_mod, "serial.tools": tools_mod,
+                    "serial.tools.list_ports": lp_mod})
+
+calls = {}
+class FakeClient:
+    def __init__(self, *a, **k): pass
+    def username_pw_set(self, u, p): calls["auth"] = (u, p)
+    def tls_set(self, ca_certs=None): calls["ca_certs"] = ca_certs
+    def tls_insecure_set(self, v): calls["insecure"] = v
+    def will_set(self, *a, **k): pass
+    def reconnect_delay_set(self, *a, **k): pass
+    def connect_async(self, host, port=1883, keepalive=60): calls["connect"] = (host, port)
+    def loop_start(self): pass
+paho_mod = types.ModuleType("paho")
+mqtt_mod = types.ModuleType("paho.mqtt")
+client_mod = types.ModuleType("paho.mqtt.client")
+client_mod.Client = FakeClient
+client_mod.CallbackAPIVersion = types.SimpleNamespace(VERSION2=2)
+paho_mod.mqtt = mqtt_mod
+mqtt_mod.client = client_mod
+sys.modules.update({"paho": paho_mod, "paho.mqtt": mqtt_mod,
+                    "paho.mqtt.client": client_mod})
+
+spec = importlib.util.spec_from_file_location("gw", os.path.join(gwdir, "gateway.py"))
+gw = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gw)
+
+with open(os.path.join(gwdir, "mqtt.json")) as f:
+    cfg = json.load(f)
+assert cfg.get("tls_ca_pem"), "fetched config lost tls_ca_pem"
+
+gw.MqttLink(cfg).start("e2e-master")
+
+ca_path = os.path.join(gwdir, "config-ca.pem")
+assert os.path.exists(ca_path), "config-ca.pem not written"
+with open(ca_path) as f:
+    content = f.read()
+assert content == cfg["tls_ca_pem"].strip() + "\n", \
+    "config-ca.pem content mismatch: %r" % content
+assert calls.get("ca_certs") == ca_path, \
+    "TLS pinned to %r, not the inline CA (tls_ca must lose)" % calls.get("ca_certs")
+assert calls.get("connect") == (cfg["host"], cfg["port"]), calls.get("connect")
+assert gw.materialize_inline_ca(cfg) == ca_path, "re-materialize not idempotent"
+PYEOF
+check "PYTHONPYCACHEPREFIX='$E2E/pycache' python3 '$E2E/tls-ca-pem-test.py' '$ROOT/opt/irl-gateway'" "gateway writes config-ca.pem from tls_ca_pem and pins it for TLS (beats tls_ca)"
 
 echo "== 3. Auto-update: no change -> silent no-op =="
 H1=$(cat "$ROOT/etc/irl-player/installer.sha256")
@@ -205,6 +274,8 @@ printf '# canary-test marker\n' >> "$SITE/install.sh"
 "$ROOT/usr/local/bin/irl-update" > "$E2E/canary.log" 2>&1
 check "grep -q 'update applied' '$E2E/canary.log'" "canary device applies with no delay"
 check "! grep -q 'applies it in' '$E2E/canary.log'" "no wait message on canary"
+# two full reinstalls have run since section 2b wrote the gateway's CA state
+check "grep -q 'E2E-FAKE-INLINE-CA' '$ROOT/opt/irl-gateway/config-ca.pem'" "reinstalls leave config-ca.pem alone (like mqtt.json)"
 
 echo "== 8. Concurrency: second updater can't run while one holds the lock =="
 ( exec 9>"$ROOT/var/lock/irl-update.lock"; flock 9; "$ROOT/usr/local/bin/irl-update"; echo "rc=$?" > "$E2E/lock.rc" )
@@ -336,6 +407,7 @@ check "grep -q 'disable --now irl-player-update.timer' '$ROOT/systemctl.log'" "u
 check "grep -q 'disable --now irl-player-watchdog' '$ROOT/systemctl.log'" "watchdog disabled on uninstall"
 check "grep -q 'disable --now irl-player-netwatch' '$ROOT/systemctl.log'" "netwatch disabled on uninstall"
 check "grep -q 'disable --now irl-gateway' '$ROOT/systemctl.log'" "gateway disabled on uninstall"
+check "! [ -e '$ROOT/opt/irl-gateway/config-ca.pem' ]" "panel-delivered CA removed on uninstall (with mqtt.json)"
 check "grep -q 'disable --now irl-player-telemetry.timer' '$ROOT/systemctl.log'" "telemetry timer disabled on uninstall"
 check "grep -q 'disable --now irl-player-screen.timer' '$ROOT/systemctl.log'" "screen switch timer disabled on uninstall"
 check "grep -q 'disable --now irl-player-reboot.timer' '$ROOT/systemctl.log'" "weekly reboot timer disabled on uninstall"
