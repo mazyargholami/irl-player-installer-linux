@@ -84,7 +84,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=21
+INSTALLER_REV=22
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -1659,7 +1659,12 @@ OnBootSec=2min
 OnUnitActiveSec=1h
 # spread devices out so they don't all hit the server at the same second
 RandomizedDelaySec=10min
-Persistent=true
+# NOTE: no Persistent= here. It only has an effect on OnCalendar= timers; on a
+# monotonic-only timer (systemd 257) starting mid-session with a stamp already
+# on disk - which is exactly the state right after every install - it collapses
+# the next elapse to infinity and the hourly re-check never fires again (boot
+# still works, so updates only landed on reboot). The telemetry timer omits it
+# and stays healthy; keep this timer identical. Do not re-add Persistent=true.
 
 [Install]
 WantedBy=timers.target
