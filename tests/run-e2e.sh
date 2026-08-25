@@ -80,9 +80,11 @@ ln -s "$REPO/packages" "$SITE/packages"
 # stands in for the config panel (query strings are ignored). tls_ca_pem is
 # the panel's optional inline broker CA: the fetch pipeline must carry it
 # through verbatim (unknown-key tolerance) and the gateway must pin it
-# (section 2b). tls_ca is also set to prove tls_ca_pem beats it.
+# (section 2b). tls_ca is also set to prove tls_ca_pem beats it. base_topic
+# is deliberately NOT the default "irl": section 2b asserts every topic the
+# gateway uses is derived from the config (per-fleet topic isolation).
 cat > "$SITE/mqtt-config" <<'FIXTURE'
-{"host": "test-broker", "port": 8883, "username": "e2e-user", "password": "e2e-pass", "tls": true, "tls_ca": "broker-ca.pem", "tls_insecure": false, "base_topic": "irl", "tls_ca_pem": "-----BEGIN CERTIFICATE-----\nE2E-FAKE-INLINE-CA\n-----END CERTIFICATE-----"}
+{"host": "test-broker", "port": 8883, "username": "e2e-user", "password": "e2e-pass", "tls": true, "tls_ca": "broker-ca.pem", "tls_insecure": false, "base_topic": "isotest", "tls_ca_pem": "-----BEGIN CERTIFICATE-----\nE2E-FAKE-INLINE-CA\n-----END CERTIFICATE-----"}
 FIXTURE
 # stands in for the player's ad server: GET /api/v1/status/<device_id> -> token
 mkdir -p "$SITE/api/v1/status"
@@ -184,10 +186,12 @@ class FakeClient:
     def username_pw_set(self, u, p): calls["auth"] = (u, p)
     def tls_set(self, ca_certs=None): calls["ca_certs"] = ca_certs
     def tls_insecure_set(self, v): calls["insecure"] = v
-    def will_set(self, *a, **k): pass
+    def will_set(self, topic, *a, **k): calls["will"] = topic
     def reconnect_delay_set(self, *a, **k): pass
     def connect_async(self, host, port=1883, keepalive=60): calls["connect"] = (host, port)
     def loop_start(self): pass
+    def subscribe(self, topic, qos=0): calls["subscribe"] = topic
+    def publish(self, topic, payload=None, retain=False): calls.setdefault("published", []).append(topic)
 paho_mod = types.ModuleType("paho")
 mqtt_mod = types.ModuleType("paho.mqtt")
 client_mod = types.ModuleType("paho.mqtt.client")
@@ -206,7 +210,16 @@ with open(os.path.join(gwdir, "mqtt.json")) as f:
     cfg = json.load(f)
 assert cfg.get("tls_ca_pem"), "fetched config lost tls_ca_pem"
 
-gw.MqttLink(cfg).start("e2e-master")
+link = gw.MqttLink(cfg)
+link.start("e2e-master")
+
+# topic isolation: every topic must come from the config's base_topic
+# (the fixture uses "isotest", NOT the default "irl")
+assert link.topic == "isotest/e2e-master", link.topic
+assert calls.get("will") == "isotest/e2e-master/status", calls.get("will")
+link._on_connect(link.client, None, None, 0)  # simulate CONNACK rc=0
+assert calls.get("subscribe") == "isotest/e2e-master/cmd", calls.get("subscribe")
+assert "isotest/e2e-master/status" in calls.get("published", []), calls.get("published")
 
 ca_path = os.path.join(gwdir, "config-ca.pem")
 assert os.path.exists(ca_path), "config-ca.pem not written"
@@ -219,7 +232,7 @@ assert calls.get("ca_certs") == ca_path, \
 assert calls.get("connect") == (cfg["host"], cfg["port"]), calls.get("connect")
 assert gw.materialize_inline_ca(cfg) == ca_path, "re-materialize not idempotent"
 PYEOF
-check "PYTHONPYCACHEPREFIX='$E2E/pycache' python3 '$E2E/tls-ca-pem-test.py' '$ROOT/opt/irl-gateway'" "gateway writes config-ca.pem from tls_ca_pem and pins it for TLS (beats tls_ca)"
+check "PYTHONPYCACHEPREFIX='$E2E/pycache' python3 '$E2E/tls-ca-pem-test.py' '$ROOT/opt/irl-gateway'" "gateway pins tls_ca_pem for TLS (beats tls_ca) and derives all topics from base_topic (isotest/...)"
 
 echo "== 3. Auto-update: no change -> silent no-op =="
 H1=$(cat "$ROOT/etc/irl-player/installer.sha256")
