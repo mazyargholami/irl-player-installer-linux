@@ -51,7 +51,7 @@ SERVICE_NAME="irl-player-kiosk"
 # `sudo touch /etc/irl-player/canary` applies immediately. Devices read this
 # value from the NEW script, so publishing an urgent fix with 0 here makes
 # the whole fleet apply it right away.
-FLEET_DELAY_HOURS=0
+FLEET_DELAY_HOURS=24
 # Every file this installer creates on the device (one per line). Used for
 # cleanup: anything listed in the previous install's manifest but no longer
 # listed here is disabled and deleted on the next run — so removing a
@@ -90,7 +90,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=25
+INSTALLER_REV=26
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
