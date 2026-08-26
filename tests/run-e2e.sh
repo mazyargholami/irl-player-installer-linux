@@ -49,6 +49,9 @@ STUB
 for t in apt-get useradd usermod userdel loginctl pkill; do
   printf '#!/bin/sh\nexit 0\n' > "$ROOT/bin/$t"
 done
+# vcgencmd stub: a known throttle bitmask (bits 0,2,16,18) so telemetry's
+# decode is deterministic even on hosts that have the real vcgencmd
+printf '#!/bin/sh\necho "throttled=0x50005"\n' > "$ROOT/bin/vcgencmd"
 chmod +x "$ROOT/bin/"*
 export PATH="$ROOT/bin:$PATH"
 
@@ -83,14 +86,42 @@ ln -s "$REPO/packages" "$SITE/packages"
 # (section 2b). tls_ca is also set to prove tls_ca_pem beats it. base_topic
 # is deliberately NOT the default "irl": section 2b asserts every topic the
 # gateway uses is derived from the config (per-fleet topic isolation).
-cat > "$SITE/mqtt-config" <<'FIXTURE'
-{"host": "test-broker", "port": 8883, "username": "e2e-user", "password": "e2e-pass", "tls": true, "tls_ca": "broker-ca.pem", "tls_insecure": false, "base_topic": "isotest", "tls_ca_pem": "-----BEGIN CERTIFICATE-----\nE2E-FAKE-INLINE-CA\n-----END CERTIFICATE-----"}
+# telemetry_hmac is the panel's per-device telemetry signing secret (additive
+# key, rev >= 25): the fetch must carry it through verbatim and irl-telemetry
+# must sign its POST with it (asserted below against this exact value).
+HSECRET="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+cat > "$SITE/mqtt-config" <<FIXTURE
+{"host": "test-broker", "port": 8883, "username": "e2e-user", "password": "e2e-pass", "tls": true, "tls_ca": "broker-ca.pem", "tls_insecure": false, "base_topic": "isotest", "tls_ca_pem": "-----BEGIN CERTIFICATE-----\nE2E-FAKE-INLINE-CA\n-----END CERTIFICATE-----", "telemetry_hmac": "$HSECRET"}
 FIXTURE
 # stands in for the player's ad server: GET /api/v1/status/<device_id> -> token
 mkdir -p "$SITE/api/v1/status"
 printf '{"session_code":"test-device-uuid-0001","external_id":"tok-e2e-abcdef","status":"approved"}\n' > "$SITE/api/v1/status/test-device-uuid-0001"
 cp "$REPO/screen.txt" "$SITE/screen.txt"
-python3 -m http.server "$PORT" --directory "$SITE" >/dev/null 2>&1 &
+# serves $SITE like http.server, and additionally records telemetry POSTs
+# (path, signature headers, raw body) so the HMAC contract can be asserted
+python3 - "$PORT" "$SITE" "$E2E/telemetry-posts.log" >/dev/null 2>&1 <<'PYSRV' &
+import functools, http.server, json, sys
+port, site, log = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        with open(log, "a") as f:
+            f.write(json.dumps({
+                "path": self.path,
+                "ts": self.headers.get("X-IRL-Timestamp"),
+                "sig": self.headers.get("X-IRL-Signature"),
+                "body": body.decode("utf-8", "replace"),
+            }) + "\n")
+        resp = b"{}"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp)))
+        self.end_headers()
+        self.wfile.write(resp)
+    def log_message(self, *a): pass
+http.server.ThreadingHTTPServer(
+    ("127.0.0.1", port), functools.partial(Handler, directory=site)).serve_forever()
+PYSRV
 SERVER=$!
 until curl -sf -o /dev/null "http://localhost:$PORT/install.sh"; do :; done
 export IRL_BASE_URL="http://localhost:$PORT"
@@ -133,6 +164,23 @@ TOUT=$("$ROOT/usr/local/bin/irl-telemetry" --print 2>/dev/null || true)
 check "[ -z '$TOUT' ] || printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"serial\"]'" "telemetry --print yields valid JSON (or nothing without a serial)"
 check "grep -q \"T_REV=.$REV.\" '$ROOT/usr/local/bin/irl-telemetry'" "installer revision baked into the telemetry payload"
 check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"device_id\"]==\"test-device-uuid-0001\", d.get(\"device_id\"); assert d[\"screen_identity\"]==\"E2E Venue Screen 1\", d.get(\"screen_identity\"); assert d[\"device_token\"]==\"tok-e2e-abcdef\", d.get(\"device_token\")'" "telemetry resolves player device_id, screen_identity, and CMS device_token"
+check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; f=json.load(sys.stdin)[\"throttled_flags\"]; assert f=={\"under_voltage_now\":True,\"freq_capped_now\":False,\"throttled_now\":True,\"under_voltage_occurred\":True,\"throttled_occurred\":True}, f'" "telemetry decodes the vcgencmd throttle bitmask (0x50005)"
+check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; p=json.load(sys.stdin)[\"disk_free_pct\"]; assert isinstance(p,float) and 0<=p<=100, p'" "telemetry reports root-fs free space as a percentage"
+# a failing vcgencmd (non-Pi host) must yield null, never a bogus decode
+printf '#!/bin/sh\nexit 1\n' > "$ROOT/bin/vcgencmd"
+TOUT2=$("$ROOT/usr/local/bin/irl-telemetry" --print 2>/dev/null || true)
+check "printf '%s' \"\$TOUT2\" | python3 -c 'import json,sys; assert json.load(sys.stdin)[\"throttled_flags\"] is None'" "telemetry sends throttled_flags null when vcgencmd is unavailable"
+printf '#!/bin/sh\necho "throttled=0x50005"\n' > "$ROOT/bin/vcgencmd"
+# HMAC signing (panel contract): the send above ran with telemetry_hmac cached
+# in mqtt.json, so its POST must carry a fresh timestamp + a signature that
+# verifies as HMAC-SHA256(secret, "<ts>.<exact body>") in lowercase hex
+check "grep -q '\"telemetry_hmac\"' '$ROOT/opt/irl-gateway/mqtt.json'" "panel-delivered signing secret cached verbatim in mqtt.json"
+check "python3 -c 'import hashlib,hmac,json,sys,time; rec=json.loads(open(sys.argv[1]).read().splitlines()[-1]); assert rec[\"path\"].startswith(\"/telemetry\"), rec[\"path\"]; assert rec[\"ts\"] and rec[\"sig\"], rec; assert abs(time.time()-int(rec[\"ts\"]))<120, rec[\"ts\"]; want=hmac.new(bytes.fromhex(sys.argv[2]), (rec[\"ts\"]+\".\"+rec[\"body\"]).encode(), hashlib.sha256).hexdigest(); assert want==rec[\"sig\"], (want, rec[\"sig\"]); json.loads(rec[\"body\"])' '$E2E/telemetry-posts.log' '$HSECRET'" "telemetry POST is HMAC-signed and the signature verifies against the panel secret"
+# no secret cached (pending device / config never fetched) -> unsigned post
+mv "$ROOT/opt/irl-gateway/mqtt.json" "$ROOT/opt/irl-gateway/mqtt.json.hold"
+"$ROOT/usr/local/bin/irl-telemetry" >/dev/null 2>&1
+check "python3 -c 'import json,sys; rec=json.loads(open(sys.argv[1]).read().splitlines()[-1]); assert rec[\"ts\"] is None and rec[\"sig\"] is None, rec; json.loads(rec[\"body\"])' '$E2E/telemetry-posts.log'" "telemetry posts unsigned when no secret is cached (pending device)"
+mv "$ROOT/opt/irl-gateway/mqtt.json.hold" "$ROOT/opt/irl-gateway/mqtt.json"
 check "grep -q 'enable --now irl-player-update.timer' '$ROOT/systemctl.log'" "update timer enabled"
 check "grep -q 'restart irl-player-kiosk' '$ROOT/systemctl.log'" "kiosk (re)started"
 check "[ -L '$ROOT/etc/irl-player/icons/default/cursors' ]" "transparent-cursor symlink created"
@@ -249,9 +297,12 @@ check "[ -f '$ROOT/etc/systemd/system/irl-player-kiosk.service' ]" "nothing was 
 mv "$SITE/install.sh.real" "$SITE/install.sh"
 
 echo "== 5. Canary rollout: fleet devices wait, canary goes first =="
-# v2 drops the whole hotkey feature (section 8 + its MANAGED_FILES lines + enable line)
+# v2 drops the whole hotkey feature (section 8 + its MANAGED_FILES lines + enable line).
+# The gating tests pin v2's FLEET_DELAY_HOURS to 24 (the updater reads the value
+# from the NEW script) so publishing an urgent release with 0 doesn't break them.
 awk '/^# --- 8\. /{skip=1} /^# --- 9\. /{skip=0} !skip' "$SITE/install.sh" \
-  | sed -e '/irl-player-hotkey/d' -e '/irl-hotkeyd/d' -e "s/^INSTALLER_REV=$REV/INSTALLER_REV=$((REV+1))/" > "$SITE/install.v2"
+  | sed -e '/irl-player-hotkey/d' -e '/irl-hotkeyd/d' -e "s/^INSTALLER_REV=$REV/INSTALLER_REV=$((REV+1))/" \
+        -e 's/^FLEET_DELAY_HOURS=[0-9][0-9]*$/FLEET_DELAY_HOURS=24/' > "$SITE/install.v2"
 mv "$SITE/install.v2" "$SITE/install.sh"
 bash -n "$SITE/install.sh" && ok "v2 script valid" || bad "v2 script broken"
 "$ROOT/usr/local/bin/irl-update" > "$E2E/gate.log" 2>&1

@@ -35,6 +35,10 @@ set -euo pipefail
 
 # ----------------------- configuration -----------------------
 BASE_URL="${IRL_BASE_URL:-https://linux-player.theirlnetwork.com}"
+# Refuse protocol downgrades (a redirect to plain http) on every fetch of
+# executable content. Only relaxed when the base URL itself is http (tests).
+CURL_HTTPS_ONLY=""
+case "$BASE_URL" in https://*) CURL_HTTPS_ONLY="--proto =https --tlsv1.2";; esac
 VERSION="1.2.6"
 # Architectures with a build in packages/ — add e.g. "amd64" here once
 # packages/irl-player_<version>_amd64.deb exists.
@@ -47,7 +51,7 @@ SERVICE_NAME="irl-player-kiosk"
 # `sudo touch /etc/irl-player/canary` applies immediately. Devices read this
 # value from the NEW script, so publishing an urgent fix with 0 here makes
 # the whole fleet apply it right away.
-FLEET_DELAY_HOURS=24
+FLEET_DELAY_HOURS=0
 # Every file this installer creates on the device (one per line). Used for
 # cleanup: anything listed in the previous install's manifest but no longer
 # listed here is disabled and deleted on the next run — so removing a
@@ -86,7 +90,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=24
+INSTALLER_REV=25
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -141,7 +145,7 @@ if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/packages/$DEB_NAME" ]; then
 else
   DEB_PATH="$(mktemp -d)/$DEB_NAME"
   log "Downloading $BASE_URL/packages/$DEB_NAME ..."
-  curl -fSL --retry 3 -o "$DEB_PATH" "$BASE_URL/packages/$DEB_NAME"
+  curl -fSL --retry 3 $CURL_HTTPS_ONLY -o "$DEB_PATH" "$BASE_URL/packages/$DEB_NAME"
 fi
 
 log "Installing irl-player $VERSION ..."
@@ -1327,8 +1331,10 @@ set -u
 OUT=/opt/irl-gateway/mqtt.json
 URL="https://iot-config.theirlnetwork.com/mqtt-config"
 SERIAL="$(awk '/^Serial/{print $3}' /proc/cpuinfo 2>/dev/null || true)"
+HTTPS_ONLY=""
+case "$URL" in https://*) HTTPS_ONLY="--proto =https --tlsv1.2";; esac
 umask 077
-if curl -fsS --max-time 20 "${URL}?serial=${SERIAL}" -o "$OUT.tmp" 2>/dev/null \
+if curl -fsS --max-time 20 $HTTPS_ONLY "${URL}?serial=${SERIAL}" -o "$OUT.tmp" 2>/dev/null \
    && grep -q '"host"' "$OUT.tmp"; then
   mv "$OUT.tmp" "$OUT"
   exit 0
@@ -1404,7 +1410,9 @@ T_APP="$(dpkg-query -W -f '${Version}' irl-player 2>/dev/null)" || true
 T_CANARY=false; [ -e /etc/irl-player/canary ] && T_CANARY=true
 T_UPTIME="$(awk '{print int($1)}' /proc/uptime 2>/dev/null)" || true
 T_CPUTEMP="$(awk '{printf "%.1f", $1/1000}' /sys/class/thermal/thermal_zone0/temp 2>/dev/null)" || true
+T_THROTTLED="$(vcgencmd get_throttled 2>/dev/null | awk -F= '{print $2; exit}')" || true
 T_DISKFREE="$(df -Pk / 2>/dev/null | awk 'NR==2{print int($4/1024)}')" || true
+T_DISKPCT="$(df -Pk / 2>/dev/null | awk 'NR==2 && $2>0 {printf "%.1f", $4*100/$2}')" || true
 T_MEMFREE="$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null)" || true
 WIFI="$(iw dev wlan0 link 2>/dev/null)" || true
 T_SSID="$(printf '%s' "${WIFI:-}" | awk -F': ' '/SSID:/{print $2; exit}')" || true
@@ -1428,13 +1436,16 @@ fi
 if [ -n "${T_DEVICE_ID:-}" ] && [ -r "$PLAYER_ENV" ]; then
   API_URL="$(awk -F= '/^API_URL=/{sub(/^API_URL=/,""); gsub(/[\r"]/,""); print; exit}' "$PLAYER_ENV")" || true
   if [ -n "${API_URL:-}" ]; then
-    T_DEVICE_TOKEN="$(curl -fsS --max-time 5 "$API_URL/api/v1/status/$T_DEVICE_ID" 2>/dev/null \
+    API_HTTPS_ONLY=""
+    case "$API_URL" in https://*) API_HTTPS_ONLY="--proto =https --tlsv1.2";; esac
+    T_DEVICE_TOKEN="$(curl -fsS --max-time 5 $API_HTTPS_ONLY "$API_URL/api/v1/status/$T_DEVICE_ID" 2>/dev/null \
       | python3 -c 'import json,sys; print(json.load(sys.stdin).get("external_id") or "")' 2>/dev/null)" || true
   fi
 fi
 
 export T_SERIAL T_HOSTNAME T_MODEL T_OS T_REV T_APP T_CANARY T_UPTIME \
-       T_CPUTEMP T_DISKFREE T_MEMFREE T_SSID T_SIGNAL T_KIOSK T_GATEWAY T_IP \
+       T_CPUTEMP T_THROTTLED T_DISKFREE T_DISKPCT T_MEMFREE \
+       T_SSID T_SIGNAL T_KIOSK T_GATEWAY T_IP \
        T_DEVICE_ID T_SCREEN T_DEVICE_TOKEN
 
 PAYLOAD="$(python3 - <<'PY' 2>/dev/null
@@ -1444,6 +1455,21 @@ def num(v, cast):
         return cast(v)
     except (TypeError, ValueError):
         return None
+def throttled(v):
+    # vcgencmd get_throttled bitmask: bits 0/1/2 = under-voltage / arm freq
+    # capped / throttled right now; bits 16/18 = under-voltage / throttling
+    # has occurred since boot. Null when vcgencmd is missing or fails.
+    try:
+        bits = int(v, 16)
+    except (TypeError, ValueError):
+        return None
+    return {
+        "under_voltage_now":      bool(bits & (1 << 0)),
+        "freq_capped_now":        bool(bits & (1 << 1)),
+        "throttled_now":          bool(bits & (1 << 2)),
+        "under_voltage_occurred": bool(bits & (1 << 16)),
+        "throttled_occurred":     bool(bits & (1 << 18)),
+    }
 e = os.environ.get
 print(json.dumps({
     "serial": e("T_SERIAL", ""),
@@ -1455,7 +1481,9 @@ print(json.dumps({
     "canary": e("T_CANARY") == "true",
     "uptime_s": num(e("T_UPTIME"), int),
     "cpu_temp_c": num(e("T_CPUTEMP"), float),
+    "throttled_flags": throttled(e("T_THROTTLED")),
     "disk_free_mb": num(e("T_DISKFREE"), int),
+    "disk_free_pct": num(e("T_DISKPCT"), float),
     "mem_free_mb": num(e("T_MEMFREE"), int),
     "wifi_ssid": e("T_SSID") or None,
     "wifi_signal_dbm": num(e("T_SIGNAL"), int),
@@ -1473,8 +1501,28 @@ if [ "${1:-}" = "--print" ]; then
   printf '%s\n' "$PAYLOAD"
   exit 0
 fi
-curl -fsS --max-time 15 -H "Content-Type: application/json" \
-  -d "$PAYLOAD" "$URL" >/dev/null 2>&1 || true
+
+# HMAC signing (panel contract, rev >= 25): once approved, the device receives
+# a per-device secret as the additive "telemetry_hmac" key (64 hex chars) in
+# the gateway's panel-fetched mqtt.json. Sign "<unix ts>.<exact body bytes>"
+# with HMAC-SHA256 and send the timestamp + lowercase-hex signature headers.
+# No secret (pending device, or config never fetched) -> post unsigned, which
+# the panel accepts unchanged. The secret must be signed with as-is bytes:
+# the body signed and the body sent must be identical.
+SECRET="$(python3 -c 'import json,sys,re; s=json.load(open(sys.argv[1])).get("telemetry_hmac") or ""; print(s if re.fullmatch(r"[0-9a-f]{64}", s) else "")' /opt/irl-gateway/mqtt.json 2>/dev/null)" || true
+CURL=(curl -fsS --max-time 15 -H "Content-Type: application/json")
+case "$URL" in https://*) CURL+=(--proto =https --tlsv1.2);; esac
+if [ -n "${SECRET:-}" ]; then
+  TS="$(date +%s)"
+  SIG="$(T_SIGN_TS="$TS" T_SIGN_KEY="$SECRET" T_SIGN_BODY="$PAYLOAD" python3 -c '
+import hashlib, hmac, os
+e = os.environ
+print(hmac.new(bytes.fromhex(e["T_SIGN_KEY"]),
+               (e["T_SIGN_TS"] + "." + e["T_SIGN_BODY"]).encode(),
+               hashlib.sha256).hexdigest())' 2>/dev/null)" || true
+  [ -n "${SIG:-}" ] && CURL+=(-H "X-IRL-Timestamp: $TS" -H "X-IRL-Signature: $SIG")
+fi
+"${CURL[@]}" -d "$PAYLOAD" "$URL" >/dev/null 2>&1 || true
 exit 0
 TELEMETRY_EOF
 chmod +x /usr/local/bin/irl-telemetry
@@ -1523,8 +1571,10 @@ SCREEN_URL="${IRL_SCREEN_URL:-@BASE_URL@/screen.txt}"
 KIOSK_USER=irlplayer
 STATE_FILE=/var/lib/irl-player/screen-state
 
+HTTPS_ONLY=""
+case "$SCREEN_URL" in https://*) HTTPS_ONLY="--proto =https --tlsv1.2";; esac
 # Pages' CDN caches ~10 min; the cache-buster keeps the switch near-real-time.
-val="$(curl -fsSL --max-time 15 "${SCREEN_URL}?t=$(date +%s)" 2>/dev/null | head -c 8 | tr -d '[:space:]')"
+val="$(curl -fsSL --max-time 15 $HTTPS_ONLY "${SCREEN_URL}?t=$(date +%s)" 2>/dev/null | head -c 8 | tr -d '[:space:]')"
 want=on
 [ "$val" = "0" ] && want=off
 
@@ -1608,10 +1658,14 @@ main() {
   exec 9>/var/lock/irl-update.lock
   flock -n 9 || exit 0
 
+  # refuse protocol downgrades on the fetch that gets executed as root
+  HTTPS_ONLY=""
+  case "$BASE_URL" in https://*) HTTPS_ONLY="--proto =https --tlsv1.2";; esac
+
   TMP="$(mktemp)"
   trap 'rm -f "$TMP"' EXIT
   # offline or server unreachable: fine, the timer tries again next hour
-  curl -fsSL --retry 3 -o "$TMP" "$BASE_URL/install.sh" || exit 0
+  curl -fsSL --retry 3 $HTTPS_ONLY -o "$TMP" "$BASE_URL/install.sh" || exit 0
   head -1 "$TMP" | grep -q '^#!' || exit 0   # not a script (captive portal etc.)
 
   NEW="$(sha256sum "$TMP" | awk '{print $1}')"
@@ -1667,7 +1721,7 @@ if [ -n "$SELF" ] && [ -f "$SELF" ]; then
   sha256sum "$SELF" | awk '{print $1}' > /etc/irl-player/installer.sha256
 else
   HASH_TMP="$(mktemp)"
-  if curl -fsSL --retry 3 -o "$HASH_TMP" "$BASE_URL/install.sh"; then
+  if curl -fsSL --retry 3 $CURL_HTTPS_ONLY -o "$HASH_TMP" "$BASE_URL/install.sh"; then
     sha256sum "$HASH_TMP" | awk '{print $1}' > /etc/irl-player/installer.sha256
   fi
   rm -f "$HASH_TMP"
