@@ -297,9 +297,12 @@ check "[ -f '$ROOT/etc/systemd/system/irl-player-kiosk.service' ]" "nothing was 
 mv "$SITE/install.sh.real" "$SITE/install.sh"
 
 echo "== 5. Canary rollout: fleet devices wait, canary goes first =="
-# v2 drops the whole hotkey feature (section 8 + its MANAGED_FILES lines + enable line)
+# v2 drops the whole hotkey feature (section 8 + its MANAGED_FILES lines + enable line).
+# The gating tests pin v2's FLEET_DELAY_HOURS to 24 (the updater reads the value
+# from the NEW script) so publishing an urgent release with 0 doesn't break them.
 awk '/^# --- 8\. /{skip=1} /^# --- 9\. /{skip=0} !skip' "$SITE/install.sh" \
-  | sed -e '/irl-player-hotkey/d' -e '/irl-hotkeyd/d' -e "s/^INSTALLER_REV=$REV/INSTALLER_REV=$((REV+1))/" > "$SITE/install.v2"
+  | sed -e '/irl-player-hotkey/d' -e '/irl-hotkeyd/d' -e "s/^INSTALLER_REV=$REV/INSTALLER_REV=$((REV+1))/" \
+        -e 's/^FLEET_DELAY_HOURS=[0-9][0-9]*$/FLEET_DELAY_HOURS=24/' > "$SITE/install.v2"
 mv "$SITE/install.v2" "$SITE/install.sh"
 bash -n "$SITE/install.sh" && ok "v2 script valid" || bad "v2 script broken"
 "$ROOT/usr/local/bin/irl-update" > "$E2E/gate.log" 2>&1
