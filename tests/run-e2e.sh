@@ -46,7 +46,8 @@ exit 0
 STUB
 # userdel/loginctl/pkill are stubbed so uninstall.sh can never touch the real
 # irlplayer user or its processes when the suite runs on a provisioned device
-for t in apt-get useradd usermod userdel loginctl pkill; do
+# (journalctl too: the installer's --vacuum-size must not trim the host journal)
+for t in apt-get useradd usermod userdel loginctl pkill journalctl; do
   printf '#!/bin/sh\nexit 0\n' > "$ROOT/bin/$t"
 done
 # vcgencmd stub: a known throttle bitmask (bits 0,2,16,18) so telemetry's
@@ -59,6 +60,7 @@ export PATH="$ROOT/bin:$PATH"
 redirect() {  # rewrite absolute system paths into $ROOT
   sed -e "s|/etc/irl-player|$ROOT/etc/irl-player|g" \
       -e "s|/etc/systemd/system|$ROOT/etc/systemd/system|g" \
+      -e "s|/etc/systemd/journald.conf.d|$ROOT/etc/systemd/journald.conf.d|g" \
       -e "s|/usr/local/bin|$ROOT/usr/local/bin|g" \
       -e "s|/var/lock|$ROOT/var/lock|g" \
       -e "s|/proc/device-tree/model|$ROOT/proc/model|g" \
@@ -139,6 +141,7 @@ for f in usr/local/bin/irl-kiosk-run usr/local/bin/irl-kiosk-toggle usr/local/bi
          etc/systemd/system/irl-player-update.timer etc/systemd/system/irl-player-watchdog.service \
          etc/systemd/system/irl-player-netwatch.service \
          etc/systemd/system.conf.d/irl-watchdog.conf \
+         etc/systemd/journald.conf.d/irl-player.conf \
          etc/systemd/system/irl-gateway.service \
          opt/irl-gateway/gateway.py opt/irl-gateway/broker-ca.pem \
          usr/local/bin/irl-gateway-config \
@@ -154,6 +157,8 @@ for f in usr/local/bin/irl-kiosk-run usr/local/bin/irl-kiosk-toggle usr/local/bi
          etc/irl-player/manifest etc/irl-player/installer.sha256; do
   check "[ -e '$ROOT/$f' ]" "created $f"
 done
+check "grep -q 'SystemMaxUse=100M' '$ROOT/etc/systemd/journald.conf.d/irl-player.conf'" "journal capped at 100M"
+check "grep -q 'AutocleanInterval \"7\"' '$ROOT/etc/apt/apt.conf.d/60irl-auto-upgrades'" "apt archive cache pruned weekly (AutocleanInterval)"
 check "! [ -e '$ROOT/opt/irl-gateway/mqtt.json' ]" "installer itself writes no config file (helper's job)"
 check "! grep -q 'MQTT_JSON_ENC\|GWK=' '$SITE/install.sh'" "no credential blob or passphrase left in the installer"
 check "'$ROOT/usr/local/bin/irl-gateway-config'" "config helper fetches the MQTT config"
@@ -401,6 +406,32 @@ check "grep -q 'attempt 1/3' '$E2E/wd.out' && grep -q 'attempt 3/3' '$E2E/wd.out
 check "grep -q 'rebooting device' '$E2E/wd.out'" "reboot decision logged"
 check "[ -s '$ROOT/var/lib/irl-player/last-watchdog-reboot' ]" "reboot timestamp persisted (2h backoff)"
 
+echo "== 9b. Freeze watchdog: static page (pair screen) slows the reboot cycle =="
+# Section 9 ended with a reboot; the watchdog recorded the hash it rebooted
+# for. Simulate the post-reboot world: the SAME static picture, with the last
+# reboot older than the 2h backoff — a real freeze would reboot again here,
+# a static page must wait out the 1-day backoff instead.
+check "[ -s '$ROOT/var/lib/irl-player/last-reboot-hash' ]" "hash of the rebooted-for screen persisted"
+echo $(( $(date +%s) - 7300 )) > "$ROOT/var/lib/irl-player/last-watchdog-reboot"
+: > "$ROOT/simlog"
+PATH="$ROOT/simbin:$PATH" timeout 40 bash "$E2E/wd-fast" > "$E2E/wd2.out" 2>&1 &
+WD=$!
+until grep -q 'static page' "$E2E/wd2.out" 2>/dev/null; do sleep 1; kill -0 $WD 2>/dev/null || break; done
+sleep 3   # time enough to (wrongly) reboot if the static backoff didn't hold
+kill $WD 2>/dev/null; wait $WD 2>/dev/null
+check "grep -q 'static page' '$E2E/wd2.out'" "identical screen after a reboot detected as static page"
+check "! grep -q REBOOT '$ROOT/simlog'" "static page: no reboot inside the 1-day backoff"
+check "grep -q 'restart irl-player-kiosk' '$ROOT/simlog'" "player restarts still attempted on a static page"
+# a DIFFERENT frozen picture after the reboot is a real freeze: normal ladder
+echo frame-real-freeze > "$ROOT/frame.dat"
+: > "$ROOT/simlog"
+PATH="$ROOT/simbin:$PATH" timeout 40 bash "$E2E/wd-fast" > "$E2E/wd3.out" 2>&1 &
+WD=$!
+until grep -q REBOOT "$ROOT/simlog" 2>/dev/null; do sleep 1; kill -0 $WD 2>/dev/null || break; done
+kill $WD 2>/dev/null; wait $WD 2>/dev/null
+check "grep -q REBOOT '$ROOT/simlog'" "new frozen screen after a reboot: reboot ladder still fires"
+check "! grep -q 'static page' '$E2E/wd3.out'" "real freeze not misread as a static page"
+
 echo "== 10. Network watchdog: offline -> restart networking -> reboot =="
 sed -e 's/^INTERVAL=60 /INTERVAL=1 /' -e 's/^RESTART_NET_AFTER=600 /RESTART_NET_AFTER=3 /' \
     -e 's/^REBOOT_AFTER=1800 /REBOOT_AFTER=6 /' "$ROOT/usr/local/bin/irl-netwatch" > "$E2E/nw-fast"
@@ -428,6 +459,30 @@ check "grep -q 'restarting networking' '$E2E/nw.out'" "offline 3 ticks: networki
 check "grep -q 'restart NetworkManager' '$ROOT/simlog2'" "NetworkManager restart issued"
 check "grep -q REBOOT '$ROOT/simlog2'" "still offline: device reboot triggered"
 check "[ -s '$ROOT/var/lib/irl-player/last-netwatch-reboot' ]" "reboot timestamp persisted (2h backoff)"
+check "[ \"\$(cat '$ROOT/var/lib/irl-player/netwatch-reboots' 2>/dev/null)\" = 1 ]" "consecutive-reboot counter persisted (1)"
+
+echo "== 10a. Network watchdog: fruitless reboots stop after the cap =="
+# Pretend the budget is spent (3 reboots, none helped) and the 2h backoff has
+# passed — the old behavior would reboot forever, the cap must fall back to
+# networking restarts only.
+echo 3 > "$ROOT/var/lib/irl-player/netwatch-reboots"
+echo $(( $(date +%s) - 7300 )) > "$ROOT/var/lib/irl-player/last-netwatch-reboot"
+: > "$ROOT/simlog2"
+PATH="$ROOT/simbin2:$PATH" timeout 20 bash "$E2E/nw-fast" > "$E2E/nw2.out" 2>&1 &
+NW=$!
+until grep -q 'outage looks external' "$E2E/nw2.out" 2>/dev/null; do sleep 1; kill -0 $NW 2>/dev/null || break; done
+sleep 2   # time enough to (wrongly) reboot if the cap didn't hold
+kill $NW 2>/dev/null; wait $NW 2>/dev/null
+check "grep -q 'outage looks external' '$E2E/nw2.out'" "external-outage fallback logged"
+check "! grep -q REBOOT '$ROOT/simlog2'" "after 3 fruitless reboots: no further reboot"
+check "grep -q 'restart NetworkManager' '$ROOT/simlog2'" "networking still nudged while capped"
+# connectivity returns -> the counter clears, restoring the reboot budget
+printf '#!/bin/sh\nexit 0\n' > "$ROOT/simbin2/ping"; chmod +x "$ROOT/simbin2/ping"
+PATH="$ROOT/simbin2:$PATH" timeout 6 bash "$E2E/nw-fast" > /dev/null 2>&1 &
+NW=$!
+for i in 1 2 3 4 5; do [ -e "$ROOT/var/lib/irl-player/netwatch-reboots" ] || break; sleep 1; done
+kill $NW 2>/dev/null; wait $NW 2>/dev/null
+check "[ ! -e '$ROOT/var/lib/irl-player/netwatch-reboots' ]" "back online: reboot counter cleared"
 
 echo "== 10b. Fleet screen switch: screen.txt drives displays off/on =="
 # Reuses section 9's simbin stubs (id -> uid 1000, setpriv -> exec) and its
@@ -465,7 +520,7 @@ cp "$REPO/screen.txt" "$SITE/screen.txt"
 echo "== 11. Uninstall removes everything =="
 bash "$SITE/uninstall.sh" > "$E2E/uninstall.log" 2>&1 && ok "uninstall.sh runs clean" || bad "uninstall.sh errored"
 check "! grep -q WARNING '$E2E/uninstall.log'" "uninstall reported no warnings"
-LEFT=$(find "$ROOT/etc/systemd/system" "$ROOT/etc/systemd/system.conf.d" "$ROOT/etc/apt/apt.conf.d" "$ROOT/usr/local/bin" "$ROOT/etc/irl-player" "$ROOT/var/lib/irl-player" "$ROOT/opt/irl-gateway" -type f 2>/dev/null | wc -l)
+LEFT=$(find "$ROOT/etc/systemd/system" "$ROOT/etc/systemd/system.conf.d" "$ROOT/etc/systemd/journald.conf.d" "$ROOT/etc/apt/apt.conf.d" "$ROOT/usr/local/bin" "$ROOT/etc/irl-player" "$ROOT/var/lib/irl-player" "$ROOT/opt/irl-gateway" -type f 2>/dev/null | wc -l)
 check "[ '$LEFT' = 0 ]" "no installed files left behind"
 check "grep -q 'disable --now irl-player-update.timer' '$ROOT/systemctl.log'" "update timer disabled on uninstall"
 check "grep -q 'disable --now irl-player-watchdog' '$ROOT/systemctl.log'" "watchdog disabled on uninstall"
