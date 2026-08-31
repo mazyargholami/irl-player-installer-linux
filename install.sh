@@ -66,6 +66,7 @@ MANAGED_FILES="
 /etc/systemd/system/irl-player-watchdog.service
 /etc/systemd/system/irl-player-netwatch.service
 /etc/systemd/system.conf.d/irl-watchdog.conf
+/etc/systemd/journald.conf.d/irl-player.conf
 /etc/apt/apt.conf.d/52irl-unattended-upgrades
 /etc/apt/apt.conf.d/60irl-auto-upgrades
 /usr/local/bin/irl-kiosk-run
@@ -90,7 +91,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=26
+INSTALLER_REV=27
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -370,6 +371,10 @@ EOF
 # Escalation: restart the player (up to 3 times), then reboot the device
 # (at most once every 2 hours). If the screen can't be captured, it does
 # nothing — it never acts on a guess.
+# Static-page brake: if the screen after a reboot is pixel-identical to the
+# one it rebooted for, the picture is a static page (e.g. the "Pair this
+# screen" QR), not a freeze a reboot can cure — reboots slow to once a day
+# so a forgotten unpaired device doesn't grind itself down every 2 hours.
 log "Installing freeze watchdog ..."
 
 cat > /usr/local/bin/irl-watchdog <<'EOF'
@@ -384,6 +389,7 @@ FREEZE_AFTER=300   # unchanged screen for this long = frozen
 GRACE=120          # after acting, give the player this long to come back
 MAX_RESTARTS=3     # restarts before escalating to a reboot
 REBOOT_BACKOFF=7200  # never watchdog-reboot more than once per 2 hours
+STATIC_BACKOFF=86400 # reboot backoff when the screen is a static page (see header)
 
 mkdir -p "$STATE_DIR"
 
@@ -446,9 +452,18 @@ while true; do
     systemctl restart "$SERVICE"
   else
     last_reboot="$(cat "$STATE_DIR/last-watchdog-reboot" 2>/dev/null || echo 0)"
-    if [ $((now - last_reboot)) -ge "$REBOOT_BACKOFF" ]; then
+    backoff="$REBOOT_BACKOFF"
+    if [ "$h" = "$(cat "$STATE_DIR/last-reboot-hash" 2>/dev/null)" ]; then
+      # the exact screen we already rebooted for is back: rebooting didn't
+      # change the picture, so it's a static page, not a cure-able freeze.
+      # A real freeze comes back different and gets the normal 2h ladder.
+      echo "screen matches the one already rebooted for — static page, slowing reboots to ${STATIC_BACKOFF}s"
+      backoff="$STATIC_BACKOFF"
+    fi
+    if [ $((now - last_reboot)) -ge "$backoff" ]; then
       echo "still frozen after $MAX_RESTARTS restarts — rebooting device"
       echo "$now" > "$STATE_DIR/last-watchdog-reboot"
+      echo "$h" > "$STATE_DIR/last-reboot-hash"
       sync
       reboot
     else
@@ -512,14 +527,34 @@ EOF
 cat > /etc/apt/apt.conf.d/60irl-auto-upgrades <<'EOF'
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
+// prune downloaded .debs weekly — years of nightly security updates would
+// otherwise slowly fill the small eMMC with old archives
+APT::Periodic::AutocleanInterval "7";
 EOF
 systemctl enable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+
+# --- 10b. Cap the systemd journal ---------------------------------------------
+# On images with a persistent journal the default cap is 10% of the fs
+# (~1.6 GB of a 16 GB eMMC) and the minute-cadence timers churn it forever.
+# 100 MB is weeks of kiosk logs — plenty for debugging. No journald restart
+# (it can wedge running services' stdout streams): trim now with a vacuum,
+# the cap enforces itself from the next rotation/boot.
+log "Capping systemd journal size ..."
+mkdir -p /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/irl-player.conf <<'EOF'
+[Journal]
+SystemMaxUse=100M
+EOF
+journalctl --vacuum-size=100M >/dev/null 2>&1 || true
 
 # --- 11. Network watchdog: self-heal a dead connection ------------------------
 # The freeze watchdog covers a stuck PICTURE; this covers a stuck CONNECTION
 # (router rebooted, Wi-Fi dropped and never rejoined). 10 minutes with no
 # internet -> restart networking; 30 minutes -> reboot the device (only when
-# the kiosk is running, at most once every 2 hours).
+# the kiosk is running, at most once every 2 hours). Reboots that never bring
+# the network back are capped: after MAX_REBOOTS in a row the outage is
+# clearly outside this device (ISP/router), so it stops rebooting and only
+# nudges networking until connectivity returns.
 log "Installing network watchdog ..."
 
 cat > /usr/local/bin/irl-netwatch <<'EOF'
@@ -532,6 +567,7 @@ INTERVAL=60             # seconds between connectivity checks
 RESTART_NET_AFTER=600   # offline this long -> restart networking
 REBOOT_AFTER=1800       # offline this long -> reboot (kiosk running only)
 REBOOT_BACKOFF=7200     # never netwatch-reboot more than once per 2 hours
+MAX_REBOOTS=3           # consecutive fruitless reboots before giving up on them
 
 online() {
   ping -c1 -W5 1.1.1.1 >/dev/null 2>&1 && return 0
@@ -563,6 +599,8 @@ while true; do
   if online; then
     offline_for=0
     net_restarted=0
+    # back online: the next outage gets a fresh reboot budget
+    [ -e "$STATE_DIR/netwatch-reboots" ] && rm -f "$STATE_DIR/netwatch-reboots"
     continue
   fi
   offline_for=$((offline_for + INTERVAL))
@@ -573,12 +611,24 @@ while true; do
   elif [ "$offline_for" -ge "$REBOOT_AFTER" ]; then
     # a reboot only helps a wedged device; skip when kiosk intentionally off
     systemctl is-active --quiet "$SERVICE" || continue
+    reboots="$(cat "$STATE_DIR/netwatch-reboots" 2>/dev/null || echo 0)"
+    if [ "$reboots" -ge "$MAX_REBOOTS" ]; then
+      # rebooting never brought the network back: the outage is outside this
+      # device (ISP/router down) — stop the reboot cycle, keep nudging
+      # networking every REBOOT_AFTER until connectivity returns
+      echo "offline through $reboots reboots — outage looks external, retrying networking restart only"
+      restart_networking
+      offline_for=0
+      net_restarted=1
+      continue
+    fi
     now="$(date +%s)"
     last="$(cat "$STATE_DIR/last-netwatch-reboot" 2>/dev/null || echo 0)"
     if [ $((now - last)) -ge "$REBOOT_BACKOFF" ]; then
       echo "still offline after networking restart — rebooting device"
       mkdir -p "$STATE_DIR"
       echo "$now" > "$STATE_DIR/last-netwatch-reboot"
+      echo $((reboots + 1)) > "$STATE_DIR/netwatch-reboots"
       sync
       reboot
     fi

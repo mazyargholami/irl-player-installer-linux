@@ -30,6 +30,7 @@ rm -f "/etc/systemd/system/$SERVICE_NAME.service" \
       /etc/systemd/system/irl-player-netwatch.service \
       /etc/systemd/system/irl-gateway.service \
       /etc/systemd/system.conf.d/irl-watchdog.conf \
+      /etc/systemd/journald.conf.d/irl-player.conf \
       /etc/apt/apt.conf.d/52irl-unattended-upgrades \
       /etc/apt/apt.conf.d/60irl-auto-upgrades \
       /usr/local/bin/irl-kiosk-toggle \
