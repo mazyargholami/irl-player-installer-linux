@@ -180,7 +180,13 @@ stuck:
    5 minutes, so a brief flicker between re-freezes doesn't reset the ladder.
 3. If 3 restarts didn't help: **reboot the device** — at most once every
    2 hours (timestamp in `/var/lib/irl-player/last-watchdog-reboot`).
-4. A hardware watchdog (`RuntimeWatchdogSec=15` — the Pi's built-in watchdog
+4. **Static-page brake**: the hash the watchdog rebooted for is remembered
+   (`/var/lib/irl-player/last-reboot-hash`). If the screen after the reboot
+   is pixel-identical, the picture is a static page a reboot can't cure
+   (e.g. the "Pair this screen" QR) — reboots slow to **once a day** so an
+   unpaired device doesn't grind itself down; restarts continue, and a real
+   freeze (different picture) keeps the normal 2-hour ladder.
+5. A hardware watchdog (`RuntimeWatchdogSec=15` — the Pi's built-in watchdog
    chip) force-reboots the device if the whole OS ever locks up.
 
 If the screen can't be captured (no `grim`, no Wayland socket), the watchdog
@@ -191,13 +197,19 @@ logged: `journalctl -u irl-player-watchdog`.
 A second watchdog covers a stuck **connection** (`irl-player-netwatch`):
 10 minutes with no internet → restart networking (NetworkManager, dhcpcd,
 or a raw Wi-Fi interface bounce); 30 minutes → reboot the device (only while
-the kiosk is running, at most once every 2 hours). Logs:
+the kiosk is running, at most once every 2 hours). After **3 reboots in a
+row** that never brought the network back the outage is clearly external
+(ISP or router down) — the watchdog stops rebooting and just nudges
+networking every 30 minutes until the connection returns (counter in
+`/var/lib/irl-player/netwatch-reboots`, cleared once back online). Logs:
 `journalctl -u irl-player-netwatch`.
 
 The OS underneath stays patched too: `unattended-upgrades` applies security
 updates via the standard apt-daily timers (no automatic reboots), with
 `irl-player` blacklisted so app versions are controlled exclusively by
-`irl-update`.
+`irl-update`. To keep a small eMMC healthy over years, downloaded update
+archives are pruned weekly (`AutocleanInterval`) and the systemd journal is
+capped at 100 MB (`/etc/systemd/journald.conf.d/irl-player.conf`).
 
 ## Canary rollout
 
