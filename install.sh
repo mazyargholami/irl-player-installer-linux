@@ -39,7 +39,7 @@ BASE_URL="${IRL_BASE_URL:-https://linux-player.theirlnetwork.com}"
 # executable content. Only relaxed when the base URL itself is http (tests).
 CURL_HTTPS_ONLY=""
 case "$BASE_URL" in https://*) CURL_HTTPS_ONLY="--proto =https --tlsv1.2";; esac
-VERSION="1.2.6"
+VERSION="1.2.7"
 # Architectures with a build in packages/ — add e.g. "amd64" here once
 # packages/irl-player_<version>_amd64.deb exists.
 SUPPORTED_ARCHS="arm64"
@@ -91,7 +91,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=27
+INSTALLER_REV=28
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
