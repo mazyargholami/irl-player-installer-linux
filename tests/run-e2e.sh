@@ -181,6 +181,10 @@ check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; p=json.load(sys.std
 # netwatch (null until one happened), and the always-present ack list
 check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys,time; d=json.load(sys.stdin); b=d[\"boot_time\"]; assert isinstance(b,int) and abs(time.time()-b-d[\"uptime_s\"])<120, (b, d[\"uptime_s\"])'" "telemetry reports boot_time consistent with uptime_s"
 check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"last_offline_start\"] is None and d[\"last_offline_end\"] is None, d; assert d[\"acked_commands\"]==[], d'" "no outage yet: last_offline_* null, acked_commands empty list"
+# rev 30: a missing state file must not leave an error line in the journal
+# every 5 minutes (a redirect error printed before its 2>/dev/null applied)
+TERR=$("$ROOT/usr/local/bin/irl-telemetry" --print 2>&1 >/dev/null || true)
+check "[ -z \"\$TERR\" ]" "telemetry emits nothing on stderr when no outage/ack state exists yet"
 mkdir -p "$ROOT/var/lib/irl-player"
 echo "1700000000 1700003600" > "$ROOT/var/lib/irl-player/last-offline"
 TOUT3=$("$ROOT/usr/local/bin/irl-telemetry" --print 2>/dev/null || true)
