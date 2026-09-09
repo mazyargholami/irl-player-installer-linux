@@ -100,9 +100,11 @@ mkdir -p "$SITE/api/v1/status"
 printf '{"session_code":"test-device-uuid-0001","external_id":"tok-e2e-abcdef","status":"approved"}\n' > "$SITE/api/v1/status/test-device-uuid-0001"
 cp "$REPO/screen.txt" "$SITE/screen.txt"
 # serves $SITE like http.server, and additionally records telemetry POSTs
-# (path, signature headers, raw body) so the HMAC contract can be asserted
+# (path, signature headers, raw body) so the HMAC contract can be asserted.
+# The reply is $SITE/telemetry-response.json when present (the panel's
+# command channel, section 10c), else the bare "{}" a pre-command panel sent.
 python3 - "$PORT" "$SITE" "$E2E/telemetry-posts.log" >/dev/null 2>&1 <<'PYSRV' &
-import functools, http.server, json, sys
+import functools, http.server, json, os, sys
 port, site, log = int(sys.argv[1]), sys.argv[2], sys.argv[3]
 class Handler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
@@ -115,6 +117,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "body": body.decode("utf-8", "replace"),
             }) + "\n")
         resp = b"{}"
+        try:
+            resp = open(os.path.join(site, "telemetry-response.json"), "rb").read()
+        except OSError:
+            pass
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(resp)))
@@ -171,6 +177,14 @@ check "grep -q \"T_REV=.$REV.\" '$ROOT/usr/local/bin/irl-telemetry'" "installer 
 check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"device_id\"]==\"test-device-uuid-0001\", d.get(\"device_id\"); assert d[\"screen_identity\"]==\"E2E Venue Screen 1\", d.get(\"screen_identity\"); assert d[\"device_token\"]==\"tok-e2e-abcdef\", d.get(\"device_token\")'" "telemetry resolves player device_id, screen_identity, and CMS device_token"
 check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; f=json.load(sys.stdin)[\"throttled_flags\"]; assert f=={\"under_voltage_now\":True,\"freq_capped_now\":False,\"throttled_now\":True,\"under_voltage_occurred\":True,\"throttled_occurred\":True}, f'" "telemetry decodes the vcgencmd throttle bitmask (0x50005)"
 check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; p=json.load(sys.stdin)[\"disk_free_pct\"]; assert isinstance(p,float) and 0<=p<=100, p'" "telemetry reports root-fs free space as a percentage"
+# rev 29 fields: boot_time (now - uptime), the last outage window recorded by
+# netwatch (null until one happened), and the always-present ack list
+check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys,time; d=json.load(sys.stdin); b=d[\"boot_time\"]; assert isinstance(b,int) and abs(time.time()-b-d[\"uptime_s\"])<120, (b, d[\"uptime_s\"])'" "telemetry reports boot_time consistent with uptime_s"
+check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"last_offline_start\"] is None and d[\"last_offline_end\"] is None, d; assert d[\"acked_commands\"]==[], d'" "no outage yet: last_offline_* null, acked_commands empty list"
+mkdir -p "$ROOT/var/lib/irl-player"
+echo "1700000000 1700003600" > "$ROOT/var/lib/irl-player/last-offline"
+TOUT3=$("$ROOT/usr/local/bin/irl-telemetry" --print 2>/dev/null || true)
+check "printf '%s' \"\$TOUT3\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"last_offline_start\"]==1700000000 and d[\"last_offline_end\"]==1700003600, d'" "telemetry reports the last outage window recorded by netwatch"
 # a failing vcgencmd (non-Pi host) must yield null, never a bogus decode
 printf '#!/bin/sh\nexit 1\n' > "$ROOT/bin/vcgencmd"
 TOUT2=$("$ROOT/usr/local/bin/irl-telemetry" --print 2>/dev/null || true)
@@ -201,6 +215,8 @@ check "PYTHONPYCACHEPREFIX='$E2E/pycache' python3 -m py_compile '$ROOT/opt/irl-g
 check "grep -q 'BASE_URL=\"http://localhost:$PORT\"' '$ROOT/usr/local/bin/irl-update'" "BASE_URL baked into irl-update"
 check "grep -q 'ExecStart=/usr/bin/cage' '$ROOT/etc/systemd/system/irl-player-kiosk.service'" "kiosk unit ExecStart"
 check "grep -q 'OnUnitActiveSec=1h' '$ROOT/etc/systemd/system/irl-player-update.timer'" "timer runs hourly"
+check "grep -q 'OnUnitActiveSec=5min' '$ROOT/etc/systemd/system/irl-player-telemetry.timer'" "telemetry posts every 5 minutes (panel down-detection + command latency)"
+check "! grep -q '^Persistent=' '$ROOT/etc/systemd/system/irl-player-telemetry.timer'" "telemetry timer has no Persistent= (monotonic timer)"
 # Persistent= breaks a monotonic-only timer's hourly re-arm on systemd 257 (it
 # collapses the next elapse to infinity once a stamp exists). Must stay absent.
 check "! grep -q '^Persistent=' '$ROOT/etc/systemd/system/irl-player-update.timer'" "update timer has no Persistent= (would kill the hourly re-check)"
@@ -211,6 +227,7 @@ check "grep -q 'enable --now irl-player-screen.timer' '$ROOT/systemctl.log'" "sc
 check "grep -q 'OnCalendar=Sun .* 04:00:00' '$ROOT/etc/systemd/system/irl-player-reboot.timer'" "weekly reboot scheduled Sun 04:00 local"
 check "! grep -q '^Persistent=' '$ROOT/etc/systemd/system/irl-player-reboot.timer'" "reboot timer has no Persistent= (no catch-up reboot after downtime)"
 check "grep -q 'systemctl reboot' '$ROOT/etc/systemd/system/irl-player-reboot.service'" "reboot service calls systemctl reboot"
+check "grep -q '^ExecCondition=.*/irl-netwatch --online' '$ROOT/etc/systemd/system/irl-player-reboot.service'" "weekly reboot skipped while the device is offline (ExecCondition)"
 check "grep -q 'enable --now irl-player-reboot.timer' '$ROOT/systemctl.log'" "weekly reboot timer enabled"
 
 echo "== 2b. Gateway pins the panel-delivered CA (tls_ca_pem -> config-ca.pem) =="
@@ -432,10 +449,15 @@ kill $WD 2>/dev/null; wait $WD 2>/dev/null
 check "grep -q REBOOT '$ROOT/simlog'" "new frozen screen after a reboot: reboot ladder still fires"
 check "! grep -q 'static page' '$E2E/wd3.out'" "real freeze not misread as a static page"
 
-echo "== 10. Network watchdog: offline -> restart networking -> reboot =="
+echo "== 10. Network watchdog: offline -> nudge networking, never reboot =="
+# Offline screens keep looping their cached ads (rev 29): the watchdog may
+# restart networking (10 min, then every 30 min) but must never reboot, and
+# it records the outage window for telemetry. Sim: 1s ticks, nudge after 3,
+# then every 4.
 sed -e 's/^INTERVAL=60 /INTERVAL=1 /' -e 's/^RESTART_NET_AFTER=600 /RESTART_NET_AFTER=3 /' \
-    -e 's/^REBOOT_AFTER=1800 /REBOOT_AFTER=6 /' "$ROOT/usr/local/bin/irl-netwatch" > "$E2E/nw-fast"
-grep -q '^INTERVAL=1 ' "$E2E/nw-fast" && ok "netwatch sim timings applied" || bad "netwatch timing sed failed"
+    -e 's/^RESTART_NET_EVERY=1800 /RESTART_NET_EVERY=4 /' "$ROOT/usr/local/bin/irl-netwatch" > "$E2E/nw-fast"
+grep -q '^INTERVAL=1 ' "$E2E/nw-fast" && grep -q '^RESTART_NET_EVERY=4 ' "$E2E/nw-fast" && ok "netwatch sim timings applied" || bad "netwatch timing sed failed"
+check "! grep -qi 'reboot' '$ROOT/usr/local/bin/irl-netwatch'" "netwatch has no reboot path at all"
 mkdir -p "$ROOT/simbin2"
 for t in ping curl; do printf '#!/bin/sh\nexit 1\n' > "$ROOT/simbin2/$t"; done
 cat > "$ROOT/simbin2/systemctl" <<STUB
@@ -451,38 +473,60 @@ exit 0
 STUB
 chmod +x "$ROOT/simbin2/"*
 : > "$ROOT/simlog2"
+rm -f "$ROOT/var/lib/irl-player/offline-since" "$ROOT/var/lib/irl-player/last-offline"
+PATH="$ROOT/simbin2:$PATH" bash "$E2E/nw-fast" --online; rc=$?
+check "[ $rc -ne 0 ]" "irl-netwatch --online exits non-zero while offline (weekly reboot gets skipped)"
+T0=$(date +%s)
 PATH="$ROOT/simbin2:$PATH" timeout 30 bash "$E2E/nw-fast" > "$E2E/nw.out" 2>&1 &
 NW=$!
-until grep -q REBOOT "$ROOT/simlog2" 2>/dev/null; do sleep 1; kill -0 $NW 2>/dev/null || break; done
-kill $NW 2>/dev/null; wait $NW 2>/dev/null
+# 3 ticks -> first nudge, 7 -> second, 11 -> third: wait for the third
+until [ "$(grep -c 'restart NetworkManager' "$ROOT/simlog2" 2>/dev/null)" -ge 3 ]; do sleep 1; kill -0 $NW 2>/dev/null || break; done
 check "grep -q 'restarting networking' '$E2E/nw.out'" "offline 3 ticks: networking restarted"
-check "grep -q 'restart NetworkManager' '$ROOT/simlog2'" "NetworkManager restart issued"
-check "grep -q REBOOT '$ROOT/simlog2'" "still offline: device reboot triggered"
-check "[ -s '$ROOT/var/lib/irl-player/last-netwatch-reboot' ]" "reboot timestamp persisted (2h backoff)"
-check "[ \"\$(cat '$ROOT/var/lib/irl-player/netwatch-reboots' 2>/dev/null)\" = 1 ]" "consecutive-reboot counter persisted (1)"
-
-echo "== 10a. Network watchdog: fruitless reboots stop after the cap =="
-# Pretend the budget is spent (3 reboots, none helped) and the 2h backoff has
-# passed — the old behavior would reboot forever, the cap must fall back to
-# networking restarts only.
-echo 3 > "$ROOT/var/lib/irl-player/netwatch-reboots"
-echo $(( $(date +%s) - 7300 )) > "$ROOT/var/lib/irl-player/last-netwatch-reboot"
-: > "$ROOT/simlog2"
-PATH="$ROOT/simbin2:$PATH" timeout 20 bash "$E2E/nw-fast" > "$E2E/nw2.out" 2>&1 &
-NW=$!
-until grep -q 'outage looks external' "$E2E/nw2.out" 2>/dev/null; do sleep 1; kill -0 $NW 2>/dev/null || break; done
-sleep 2   # time enough to (wrongly) reboot if the cap didn't hold
-kill $NW 2>/dev/null; wait $NW 2>/dev/null
-check "grep -q 'outage looks external' '$E2E/nw2.out'" "external-outage fallback logged"
-check "! grep -q REBOOT '$ROOT/simlog2'" "after 3 fruitless reboots: no further reboot"
-check "grep -q 'restart NetworkManager' '$ROOT/simlog2'" "networking still nudged while capped"
-# connectivity returns -> the counter clears, restoring the reboot budget
+check "[ \"\$(grep -c 'restart NetworkManager' '$ROOT/simlog2')\" -ge 3 ]" "networking nudged again every RESTART_NET_EVERY while still offline"
+check "! grep -q REBOOT '$ROOT/simlog2'" "still offline after repeated nudges: NO reboot (cached ads keep looping)"
+check "[ -s '$ROOT/var/lib/irl-player/offline-since' ]" "outage start recorded in offline-since"
+check "[ \"\$(cat '$ROOT/var/lib/irl-player/offline-since')\" -ge $T0 ]" "offline-since is the first failed check of this outage"
+check "! [ -e '$ROOT/var/lib/irl-player/last-netwatch-reboot' ] && ! [ -e '$ROOT/var/lib/irl-player/netwatch-reboots' ]" "no reboot ladder state left behind"
+# connectivity returns -> the outage window is closed for telemetry to report
 printf '#!/bin/sh\nexit 0\n' > "$ROOT/simbin2/ping"; chmod +x "$ROOT/simbin2/ping"
-PATH="$ROOT/simbin2:$PATH" timeout 6 bash "$E2E/nw-fast" > /dev/null 2>&1 &
-NW=$!
-for i in 1 2 3 4 5; do [ -e "$ROOT/var/lib/irl-player/netwatch-reboots" ] || break; sleep 1; done
+for i in 1 2 3 4 5 6; do [ -e "$ROOT/var/lib/irl-player/offline-since" ] || break; sleep 1; done
 kill $NW 2>/dev/null; wait $NW 2>/dev/null
-check "[ ! -e '$ROOT/var/lib/irl-player/netwatch-reboots' ]" "back online: reboot counter cleared"
+check "! [ -e '$ROOT/var/lib/irl-player/offline-since' ]" "back online: offline-since cleared"
+check "python3 -c 'import sys,time; a,b=open(sys.argv[1]).read().split(); a,b=int(a),int(b); assert a>=int(sys.argv[2]) and b>=a and time.time()-b<30, (a,b)' '$ROOT/var/lib/irl-player/last-offline' $T0" "last-offline holds the outage window (start end)"
+check "grep -q 'back online after' '$E2E/nw.out'" "recovery logged with the outage duration"
+PATH="$ROOT/simbin2:$PATH" bash "$E2E/nw-fast" --online; rc=$?
+check "[ $rc -eq 0 ]" "irl-netwatch --online exits 0 when online"
+TOUT4=$("$ROOT/usr/local/bin/irl-telemetry" --print 2>/dev/null || true)
+check "printf '%s' \"\$TOUT4\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"last_offline_start\"]>=int(sys.argv[1]) and d[\"last_offline_end\"]>=d[\"last_offline_start\"], d' $T0" "telemetry picks up the outage netwatch just recorded"
+
+echo "== 10a. Panel commands: reboot / restart-kiosk via the telemetry response =="
+# The panel answers a post with {"commands": [...]}; each id must run exactly
+# once (the panel re-sends until acked), be acked in the next post, and the
+# ack list must clear once that post is delivered.
+SCTL_BEFORE=$(wc -l < "$ROOT/systemctl.log")
+rm -f "$ROOT/var/lib/irl-player/commands-done" "$ROOT/var/lib/irl-player/command-acks"
+printf '{"commands": [{"id": "cmd-reboot-1", "type": "reboot"}, {"id": "cmd-restart-1", "type": "restart-kiosk"}, {"id": "bad id; rm -rf /", "type": "reboot"}, {"id": "cmd-evil", "type": "shutdown"}]}\n' > "$SITE/telemetry-response.json"
+"$ROOT/usr/local/bin/irl-telemetry" > "$E2E/cmd1.out" 2>&1
+NEWLOG="$(tail -n +$((SCTL_BEFORE+1)) "$ROOT/systemctl.log")"
+check "printf '%s\n' \"\$NEWLOG\" | grep -q '^restart irl-player-kiosk\$'" "restart-kiosk command: player restarted"
+check "printf '%s\n' \"\$NEWLOG\" | grep -q '^reboot\$'" "reboot command: systemctl reboot issued"
+check "printf '%s\n' \"\$NEWLOG\" | grep -n 'restart irl-player-kiosk\|^reboot' | sort -t: -k1n | tail -1 | grep -q reboot" "reboot runs last (after the player restart)"
+check "! printf '%s\n' \"\$NEWLOG\" | grep -q 'shutdown\|rm -rf'" "unknown verb and malformed id ignored"
+check "grep -q 'panel command cmd-restart-1' '$E2E/cmd1.out' && grep -q 'panel command cmd-reboot-1' '$E2E/cmd1.out'" "commands logged"
+check "[ \"\$(sort '$ROOT/var/lib/irl-player/commands-done' | tr '\n' ' ')\" = 'cmd-reboot-1 cmd-restart-1 ' ]" "executed ids recorded in commands-done"
+check "[ \"\$(sort '$ROOT/var/lib/irl-player/command-acks' | tr '\n' ' ')\" = 'cmd-reboot-1 cmd-restart-1 ' ]" "executed ids queued for ack"
+# panel re-sends the same commands (not yet acked): nothing may run again
+# (count actions only - the stub also logs telemetry's own is-active probes)
+ACTIONS_BEFORE=$(grep -c '^restart irl-player-kiosk$\|^reboot$' "$ROOT/systemctl.log")
+"$ROOT/usr/local/bin/irl-telemetry" > /dev/null 2>&1
+check "[ \"\$(grep -c '^restart irl-player-kiosk$\|^reboot$' '$ROOT/systemctl.log')\" = '$ACTIONS_BEFORE' ]" "re-sent command ids are not executed twice"
+check "python3 -c 'import json,sys; rec=json.loads(open(sys.argv[1]).read().splitlines()[-1]); a=json.loads(rec[\"body\"])[\"acked_commands\"]; assert sorted(a)==[\"cmd-reboot-1\",\"cmd-restart-1\"], a' '$E2E/telemetry-posts.log'" "next post carries acked_commands for both ids"
+check "! [ -s '$ROOT/var/lib/irl-player/command-acks' ]" "acks cleared once the post carrying them was delivered"
+"$ROOT/usr/local/bin/irl-telemetry" > /dev/null 2>&1
+check "python3 -c 'import json,sys; rec=json.loads(open(sys.argv[1]).read().splitlines()[-1]); assert json.loads(rec[\"body\"])[\"acked_commands\"]==[], rec' '$E2E/telemetry-posts.log'" "following post: acked_commands empty again"
+check "[ \"\$(grep -c '^restart irl-player-kiosk$\|^reboot$' '$ROOT/systemctl.log')\" = '$ACTIONS_BEFORE' ]" "still nothing re-executed"
+rm -f "$SITE/telemetry-response.json"
+"$ROOT/usr/local/bin/irl-telemetry" > /dev/null 2>&1 && ok "bare {} response (pre-command panel) still handled" || bad "telemetry failed on a bare {} response"
 
 echo "== 10b. Fleet screen switch: screen.txt drives displays off/on =="
 # Reuses section 9's simbin stubs (id -> uid 1000, setpriv -> exec) and its

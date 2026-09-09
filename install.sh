@@ -39,7 +39,7 @@ BASE_URL="${IRL_BASE_URL:-https://linux-player.theirlnetwork.com}"
 # executable content. Only relaxed when the base URL itself is http (tests).
 CURL_HTTPS_ONLY=""
 case "$BASE_URL" in https://*) CURL_HTTPS_ONLY="--proto =https --tlsv1.2";; esac
-VERSION="1.2.7"
+VERSION="1.2.8"
 # Architectures with a build in packages/ — add e.g. "amd64" here once
 # packages/irl-player_<version>_amd64.deb exists.
 SUPPORTED_ARCHS="arm64"
@@ -91,7 +91,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=28
+INSTALLER_REV=29
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -547,33 +547,38 @@ SystemMaxUse=100M
 EOF
 journalctl --vacuum-size=100M >/dev/null 2>&1 || true
 
-# --- 11. Network watchdog: self-heal a dead connection ------------------------
+# --- 11. Network watchdog: nudge a dead connection, record the outage ---------
 # The freeze watchdog covers a stuck PICTURE; this covers a stuck CONNECTION
 # (router rebooted, Wi-Fi dropped and never rejoined). 10 minutes with no
-# internet -> restart networking; 30 minutes -> reboot the device (only when
-# the kiosk is running, at most once every 2 hours). Reboots that never bring
-# the network back are capped: after MAX_REBOOTS in a row the outage is
-# clearly outside this device (ISP/router), so it stops rebooting and only
-# nudges networking until connectivity returns.
+# internet -> restart networking, then again every 30 minutes until it is
+# back. It never reboots (rev >= 29): an offline screen keeps looping the ads
+# it already has, and a reboot only interrupts that. Whether a screen gets
+# rebooted during an outage is the community manager's call - the panel's
+# "Reboot device" button, delivered through irl-telemetry (section 13).
+# The outage window is recorded so telemetry can report it once back online:
+#   /var/lib/irl-player/offline-since   first failed check of the current outage
+#   /var/lib/irl-player/last-offline    "<start> <end>" of the last finished one
+# `irl-netwatch --online` runs the same connectivity check once (exit 0/1);
+# the weekly reboot uses it to leave offline devices alone.
 log "Installing network watchdog ..."
+# state of the pre-rev-29 reboot ladder - no longer read by anything
+rm -f /var/lib/irl-player/last-netwatch-reboot /var/lib/irl-player/netwatch-reboots
 
 cat > /usr/local/bin/irl-netwatch <<'EOF'
 #!/usr/bin/env bash
 # IRL Player network watchdog. See install.sh for the design.
 set -u
-SERVICE=irl-player-kiosk
 STATE_DIR=/var/lib/irl-player
 INTERVAL=60             # seconds between connectivity checks
 RESTART_NET_AFTER=600   # offline this long -> restart networking
-REBOOT_AFTER=1800       # offline this long -> reboot (kiosk running only)
-REBOOT_BACKOFF=7200     # never netwatch-reboot more than once per 2 hours
-MAX_REBOOTS=3           # consecutive fruitless reboots before giving up on them
+RESTART_NET_EVERY=1800  # ... and again this often while still offline
 
 online() {
   ping -c1 -W5 1.1.1.1 >/dev/null 2>&1 && return 0
   ping -c1 -W5 8.8.8.8 >/dev/null 2>&1 && return 0
   curl -fsm 10 -o /dev/null https://linux-player.theirlnetwork.com/ 2>/dev/null
 }
+if [ "${1:-}" = "--online" ]; then online; exit $?; fi
 
 restart_networking() {
   if systemctl is-active --quiet NetworkManager; then
@@ -592,46 +597,31 @@ restart_networking() {
 }
 
 offline_for=0
-net_restarted=0
+next_restart=$RESTART_NET_AFTER
 
 while true; do
   sleep "$INTERVAL"
   if online; then
+    if [ -e "$STATE_DIR/offline-since" ]; then
+      start="$(cat "$STATE_DIR/offline-since" 2>/dev/null || echo 0)"
+      now="$(date +%s)"
+      echo "back online after $((now - start))s offline"
+      echo "$start $now" > "$STATE_DIR/last-offline"
+      rm -f "$STATE_DIR/offline-since"
+    fi
     offline_for=0
-    net_restarted=0
-    # back online: the next outage gets a fresh reboot budget
-    [ -e "$STATE_DIR/netwatch-reboots" ] && rm -f "$STATE_DIR/netwatch-reboots"
+    next_restart=$RESTART_NET_AFTER
     continue
   fi
+  if [ ! -e "$STATE_DIR/offline-since" ]; then
+    mkdir -p "$STATE_DIR"
+    date +%s > "$STATE_DIR/offline-since"
+  fi
   offline_for=$((offline_for + INTERVAL))
-  if [ "$net_restarted" -eq 0 ] && [ "$offline_for" -ge "$RESTART_NET_AFTER" ]; then
+  if [ "$offline_for" -ge "$next_restart" ]; then
     echo "offline for ${offline_for}s — restarting networking"
     restart_networking
-    net_restarted=1
-  elif [ "$offline_for" -ge "$REBOOT_AFTER" ]; then
-    # a reboot only helps a wedged device; skip when kiosk intentionally off
-    systemctl is-active --quiet "$SERVICE" || continue
-    reboots="$(cat "$STATE_DIR/netwatch-reboots" 2>/dev/null || echo 0)"
-    if [ "$reboots" -ge "$MAX_REBOOTS" ]; then
-      # rebooting never brought the network back: the outage is outside this
-      # device (ISP/router down) — stop the reboot cycle, keep nudging
-      # networking every REBOOT_AFTER until connectivity returns
-      echo "offline through $reboots reboots — outage looks external, retrying networking restart only"
-      restart_networking
-      offline_for=0
-      net_restarted=1
-      continue
-    fi
-    now="$(date +%s)"
-    last="$(cat "$STATE_DIR/last-netwatch-reboot" 2>/dev/null || echo 0)"
-    if [ $((now - last)) -ge "$REBOOT_BACKOFF" ]; then
-      echo "still offline after networking restart — rebooting device"
-      mkdir -p "$STATE_DIR"
-      echo "$now" > "$STATE_DIR/last-netwatch-reboot"
-      echo $((reboots + 1)) > "$STATE_DIR/netwatch-reboots"
-      sync
-      reboot
-    fi
+    next_restart=$((offline_for + RESTART_NET_EVERY))
   fi
 done
 EOF
@@ -1432,15 +1422,20 @@ RuntimeMaxSec=1d
 WantedBy=multi-user.target
 EOF
 
-# --- 13. Telemetry: hourly device-health snapshot to the fleet panel ----------
+# --- 13. Telemetry: 5-minute device-health snapshot to the fleet panel --------
 # Every device POSTs a small JSON snapshot (identity, versions, health, wifi)
-# to the config panel on boot and hourly, so the whole fleet is visible and
-# manageable in one place. Fire-and-forget: a failed post never affects
-# anything. The snapshot also carries the player's CMS device token (resolved
-# at report time, see below), so the panel can join a device row to its CMS
-# identity. That token is a credential: it travels only device -> panel over
-# HTTPS inside this POST and is never committed to this public repo.
-log "Installing telemetry reporter (hourly device snapshot to the fleet panel) ..."
+# to the config panel on boot and every 5 minutes, so the whole fleet is
+# visible and manageable in one place. Fire-and-forget: a failed post never
+# affects anything. The snapshot also carries the player's CMS device token
+# (resolved at report time, see below), so the panel can join a device row to
+# its CMS identity. That token is a credential: it travels only device ->
+# panel over HTTPS inside this POST and is never committed to this public repo.
+# Since rev 29 the post is also the fleet's command channel: the panel's
+# response may queue "reboot" / "restart-kiosk" for this device (community
+# manager buttons), and the snapshot reports boot_time plus the last outage
+# window recorded by irl-netwatch, so the panel can show how long a screen
+# was down without ever rebooting it on its own.
+log "Installing telemetry reporter (5-minute device snapshot to the fleet panel) ..."
 
 cat > /usr/local/bin/irl-telemetry <<'TELEMETRY_EOF'
 #!/usr/bin/env bash
@@ -1449,6 +1444,7 @@ cat > /usr/local/bin/irl-telemetry <<'TELEMETRY_EOF'
 # payload without sending (debugging).
 set -u
 URL="https://iot-config.theirlnetwork.com/telemetry"
+STATE_DIR=/var/lib/irl-player
 
 T_SERIAL="$(awk '/^Serial/{print $3}' /proc/cpuinfo 2>/dev/null)" || true
 [ -n "${T_SERIAL:-}" ] || exit 0
@@ -1459,6 +1455,12 @@ T_REV="@INSTALLER_REV@"
 T_APP="$(dpkg-query -W -f '${Version}' irl-player 2>/dev/null)" || true
 T_CANARY=false; [ -e /etc/irl-player/canary ] && T_CANARY=true
 T_UPTIME="$(awk '{print int($1)}' /proc/uptime 2>/dev/null)" || true
+T_BOOTTIME="$(awk -v now="$(date +%s)" '{print now - int($1)}' /proc/uptime 2>/dev/null)" || true
+# last finished outage as seen by irl-netwatch ("<start> <end>", rev >= 29)
+T_OFF_START=""; T_OFF_END=""
+read -r T_OFF_START T_OFF_END < "$STATE_DIR/last-offline" 2>/dev/null || true
+# panel commands executed since the last delivered post (see the end of this script)
+T_ACKS="$(grep -Ex '[A-Za-z0-9_.:-]{1,64}' "$STATE_DIR/command-acks" 2>/dev/null | tr '\n' ' ')" || true
 T_CPUTEMP="$(awk '{printf "%.1f", $1/1000}' /sys/class/thermal/thermal_zone0/temp 2>/dev/null)" || true
 T_THROTTLED="$(vcgencmd get_throttled 2>/dev/null | awk -F= '{print $2; exit}')" || true
 T_DISKFREE="$(df -Pk / 2>/dev/null | awk 'NR==2{print int($4/1024)}')" || true
@@ -1494,6 +1496,7 @@ if [ -n "${T_DEVICE_ID:-}" ] && [ -r "$PLAYER_ENV" ]; then
 fi
 
 export T_SERIAL T_HOSTNAME T_MODEL T_OS T_REV T_APP T_CANARY T_UPTIME \
+       T_BOOTTIME T_OFF_START T_OFF_END T_ACKS \
        T_CPUTEMP T_THROTTLED T_DISKFREE T_DISKPCT T_MEMFREE \
        T_SSID T_SIGNAL T_KIOSK T_GATEWAY T_IP \
        T_DEVICE_ID T_SCREEN T_DEVICE_TOKEN
@@ -1530,6 +1533,10 @@ print(json.dumps({
     "app_version": e("T_APP") or None,
     "canary": e("T_CANARY") == "true",
     "uptime_s": num(e("T_UPTIME"), int),
+    "boot_time": num(e("T_BOOTTIME"), int),
+    "last_offline_start": num(e("T_OFF_START"), int),
+    "last_offline_end": num(e("T_OFF_END"), int),
+    "acked_commands": (e("T_ACKS") or "").split(),
     "cpu_temp_c": num(e("T_CPUTEMP"), float),
     "throttled_flags": throttled(e("T_THROTTLED")),
     "disk_free_mb": num(e("T_DISKFREE"), int),
@@ -1572,7 +1579,71 @@ print(hmac.new(bytes.fromhex(e["T_SIGN_KEY"]),
                hashlib.sha256).hexdigest())' 2>/dev/null)" || true
   [ -n "${SIG:-}" ] && CURL+=(-H "X-IRL-Timestamp: $TS" -H "X-IRL-Signature: $SIG")
 fi
-"${CURL[@]}" -d "$PAYLOAD" "$URL" >/dev/null 2>&1 || true
+RESP="$("${CURL[@]}" -d "$PAYLOAD" "$URL" 2>/dev/null)" || exit 0
+
+# Panel commands (rev >= 29). A delivered post's response may carry
+#   {"commands": [{"id": "<id>", "type": "reboot" | "restart-kiosk"}]}
+# queued by a community manager (the panel re-sends a command until acked or
+# expired, so every id runs exactly once):
+#   commands-done  ids ever executed - a re-sent id is skipped
+#   command-acks   ids not yet confirmed to the panel - go out as
+#                  acked_commands in the next post and are dropped from the
+#                  file once that post is delivered (which just happened for
+#                  the ids this post carried)
+# Only these two verbs exist; nothing in the response is ever executed as-is.
+TODO="$(T_RESP="$RESP" python3 - "$STATE_DIR" <<'PY' 2>/dev/null
+import json, os, re, sys
+state = sys.argv[1]
+os.makedirs(state, exist_ok=True)
+done_f, acks_f = os.path.join(state, "commands-done"), os.path.join(state, "command-acks")
+def lines(p):
+    try:
+        return [l.strip() for l in open(p) if l.strip()]
+    except OSError:
+        return []
+def save(p, items):
+    with open(p, "w") as f:
+        f.write("".join(i + "\n" for i in items))
+sent = set((os.environ.get("T_ACKS") or "").split())
+pending = [a for a in lines(acks_f) if a not in sent]
+save(acks_f, pending)
+try:
+    cmds = json.loads(os.environ.get("T_RESP") or "{}").get("commands") or []
+except (ValueError, AttributeError):
+    cmds = []
+done = lines(done_f)
+seen = set(done)
+run = []
+for c in cmds if isinstance(cmds, list) else []:
+    if not isinstance(c, dict):
+        continue
+    cid, ctype = c.get("id"), c.get("type")
+    if not (isinstance(cid, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", cid)):
+        continue
+    if ctype not in ("reboot", "restart-kiosk") or cid in seen:
+        continue
+    seen.add(cid); done.append(cid); pending.append(cid); run.append((ctype, cid))
+if run:
+    save(done_f, done[-200:])
+    save(acks_f, pending)
+    # a reboot subsumes a player restart: restarts first, the reboot last
+    for ctype, cid in sorted(run, key=lambda r: r[0] == "reboot"):
+        print(ctype, cid)
+PY
+)" || true
+REBOOT=""
+while read -r ctype cid; do
+  case "${ctype:-}" in
+    restart-kiosk) echo "panel command $cid: restarting player"
+                   systemctl restart irl-player-kiosk >/dev/null 2>&1 || true ;;
+    reboot)        REBOOT="$cid" ;;
+  esac
+done <<< "$TODO"
+if [ -n "$REBOOT" ]; then
+  echo "panel command $REBOOT: rebooting device"
+  sync
+  systemctl reboot
+fi
 exit 0
 TELEMETRY_EOF
 chmod +x /usr/local/bin/irl-telemetry
@@ -1589,13 +1660,16 @@ EOF
 
 cat > /etc/systemd/system/irl-player-telemetry.timer <<'EOF'
 [Unit]
-Description=IRL Player telemetry report (on boot and hourly)
+Description=IRL Player telemetry report (on boot and every 5 minutes)
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=1h
+# 5-minute cadence (rev >= 29): the panel calls a screen "down" after 15
+# silent minutes and delivers community-manager commands in the response, so
+# a button click lands within ~5 minutes on an online device
+OnBootSec=1min
+OnUnitActiveSec=5min
 # spread devices out so they don't all report at the same second
-RandomizedDelaySec=10min
+RandomizedDelaySec=1min
 
 [Install]
 WantedBy=timers.target
@@ -1823,6 +1897,10 @@ Description=IRL Player weekly scheduled reboot
 
 [Service]
 Type=oneshot
+# An offline screen is looping the ads it already has; never interrupt that
+# with an automatic reboot (rev >= 29). ExecCondition failing = run skipped,
+# unit not failed; the reboot simply happens the next Sunday it is online.
+ExecCondition=/usr/local/bin/irl-netwatch --online
 ExecStart=/usr/bin/systemctl reboot
 EOF
 
