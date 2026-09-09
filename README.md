@@ -196,13 +196,22 @@ logged: `journalctl -u irl-player-watchdog`.
 
 A second watchdog covers a stuck **connection** (`irl-player-netwatch`):
 10 minutes with no internet → restart networking (NetworkManager, dhcpcd,
-or a raw Wi-Fi interface bounce); 30 minutes → reboot the device (only while
-the kiosk is running, at most once every 2 hours). After **3 reboots in a
-row** that never brought the network back the outage is clearly external
-(ISP or router down) — the watchdog stops rebooting and just nudges
-networking every 30 minutes until the connection returns (counter in
-`/var/lib/irl-player/netwatch-reboots`, cleared once back online). Logs:
+or a raw Wi-Fi interface bounce), then again every 30 minutes until the
+connection returns. It **never reboots** (since rev 29): a screen that lost
+its internet keeps looping the ads it already has, and a reboot would only
+interrupt that. Whether an offline screen gets rebooted is the community
+manager's decision, made from the config panel (see
+[Fleet panel: telemetry and commands](#fleet-panel-telemetry-and-commands)).
+The watchdog records the outage for the panel instead:
+`/var/lib/irl-player/offline-since` while offline,
+`/var/lib/irl-player/last-offline` (`<start> <end>`) once back. Logs:
 `journalctl -u irl-player-netwatch`.
+
+A **weekly scheduled reboot** (`irl-player-reboot.timer`, Sunday 04:00 local,
+30 min jitter) applies downloaded OS updates and re-arms any timer that
+got stuck. It is skipped while the device is offline (`ExecCondition=
+irl-netwatch --online`) for the same reason — an offline venue is never
+reset automatically; the reboot simply happens the next Sunday it is online.
 
 The OS underneath stays patched too: `unattended-upgrades` applies security
 updates via the standard apt-daily timers (no automatic reboots), with
@@ -210,6 +219,27 @@ updates via the standard apt-daily timers (no automatic reboots), with
 `irl-update`. To keep a small eMMC healthy over years, downloaded update
 archives are pruned weekly (`AutocleanInterval`) and the systemd journal is
 capped at 100 MB (`/etc/systemd/journald.conf.d/irl-player.conf`).
+
+## Fleet panel: telemetry and commands
+
+Every device posts a small health snapshot (`irl-telemetry`,
+`irl-player-telemetry.timer`) to the self-hosted config panel on boot and
+**every 5 minutes**: identity, versions, CPU temperature, throttling, disk,
+memory, Wi-Fi, `uptime_s` / `boot_time`, and the last outage window recorded
+by the network watchdog (`last_offline_start` / `last_offline_end`). The
+panel calls a screen **down** after 15 silent minutes and shows how long it
+has been down, so the community manager can call the venue instead of the
+device guessing.
+
+The panel's reply is the fleet's **command channel**: it may carry
+`{"commands": [{"id": "...", "type": "reboot" | "restart-kiosk"}]}` queued
+by the community manager's *Reboot device* / *Restart player* buttons. The
+device runs each id exactly once (executed ids in
+`/var/lib/irl-player/commands-done`), reports it back as `acked_commands` in
+its next post, and the panel keeps re-sending an id until it is acked or
+expires (24 h). A click lands within about 5 minutes on an online device; a
+screen with no internet cannot receive it — that is the point. Only those
+two verbs exist; nothing in the reply is ever executed as-is.
 
 ## Canary rollout
 
