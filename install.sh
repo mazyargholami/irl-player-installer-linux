@@ -91,7 +91,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=29
+INSTALLER_REV=30
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -1458,7 +1458,7 @@ T_UPTIME="$(awk '{print int($1)}' /proc/uptime 2>/dev/null)" || true
 T_BOOTTIME="$(awk -v now="$(date +%s)" '{print now - int($1)}' /proc/uptime 2>/dev/null)" || true
 # last finished outage as seen by irl-netwatch ("<start> <end>", rev >= 29)
 T_OFF_START=""; T_OFF_END=""
-read -r T_OFF_START T_OFF_END < "$STATE_DIR/last-offline" 2>/dev/null || true
+[ -r "$STATE_DIR/last-offline" ] && { read -r T_OFF_START T_OFF_END < "$STATE_DIR/last-offline" || true; }
 # panel commands executed since the last delivered post (see the end of this script)
 T_ACKS="$(grep -Ex '[A-Za-z0-9_.:-]{1,64}' "$STATE_DIR/command-acks" 2>/dev/null | tr '\n' ' ')" || true
 T_CPUTEMP="$(awk '{printf "%.1f", $1/1000}' /sys/class/thermal/thermal_zone0/temp 2>/dev/null)" || true
