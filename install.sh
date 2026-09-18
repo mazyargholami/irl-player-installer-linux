@@ -91,7 +91,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=35
+INSTALLER_REV=36
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; record_failure "$*"; exit 1; }
@@ -174,8 +174,11 @@ log "Installing packages (cage kiosk compositor + deps)..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq cage xwayland curl ca-certificates python3-evdev
-# transparent cursor theme + X-level cursor hiding = invisible mouse pointer
-apt-get install -y -qq xcursor-transparent-theme || warn "xcursor-transparent-theme unavailable; cursor may be visible"
+# transparent cursor theme + X-level cursor hiding = invisible mouse pointer.
+# The theme package does not exist on current Raspberry Pi OS (the canary
+# reported it as a warning on every run - rev 35), and unclutter hides the
+# cursor on its own, so its absence is a plain log line, not a warning.
+apt-get install -y -qq xcursor-transparent-theme || log "xcursor-transparent-theme unavailable (unclutter hides the cursor)"
 apt-get install -y -qq unclutter-xfixes || apt-get install -y -qq unclutter || warn "unclutter unavailable; cursor may be visible"
 # grim takes the tiny screenshots the freeze watchdog compares
 apt-get install -y -qq grim || warn "grim unavailable; freeze watchdog will stay idle"
