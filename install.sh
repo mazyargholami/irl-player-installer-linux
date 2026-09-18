@@ -91,7 +91,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=33
+INSTALLER_REV=34
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; record_failure "$*"; exit 1; }
@@ -2099,8 +2099,15 @@ systemctl set-default graphical.target >/dev/null
 systemctl enable "$SERVICE_NAME" >/dev/null
 systemctl enable --now irl-player-hotkey >/dev/null
 systemctl enable --now irl-player-update.timer >/dev/null
-systemctl enable --now irl-player-watchdog >/dev/null
-systemctl enable --now irl-player-netwatch >/dev/null
+# The watchdog and netwatch are endless loops: a running copy keeps executing
+# the code it started with (its own old inode, see install_script), so they
+# are restarted on every run (rev >= 34) - otherwise a change here only took
+# effect at the weekly reboot. Both keep their state on disk
+# (/var/lib/irl-player), so a restart loses nothing that matters.
+systemctl enable irl-player-watchdog >/dev/null
+systemctl restart irl-player-watchdog
+systemctl enable irl-player-netwatch >/dev/null
+systemctl restart irl-player-netwatch
 systemctl enable --now irl-gateway >/dev/null 2>&1 || true
 systemctl try-restart irl-gateway >/dev/null 2>&1 || true
 systemctl enable --now irl-player-telemetry.timer >/dev/null 2>&1 || true
