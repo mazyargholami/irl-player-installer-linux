@@ -91,7 +91,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=32
+INSTALLER_REV=33
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; record_failure "$*"; exit 1; }
@@ -110,6 +110,22 @@ record_failure() {
   printf '%s rev %s %s\n' "$(date +%s)" "$INSTALLER_REV" "$*" > "$UPDATE_STATE_DIR/last-update-error" 2>/dev/null || true
 }
 trap 'record_failure "line $LINENO: $BASH_COMMAND"' ERR
+
+# Scripts are replaced atomically (temp file + rename = a new inode): a
+# running copy - the updater that is re-running this very installer, a
+# telemetry post in flight - keeps reading its old inode untouched. Rewriting
+# in place (cat >) truncated that inode under the running bash, which then
+# resumed at its old byte offset inside the new, longer file and executed
+# garbage (rev 32 rollout: the old irl-update emptied installer.sha256 and
+# died with a syntax error right after a successful reinstall). Never write
+# an installer-managed script with cat > again - the e2e suite guards this.
+install_script() {  # usage: install_script /path/to/script <<'EOF' ... EOF
+  local tmp
+  tmp="$(mktemp "$1.XXXXXX")"
+  cat > "$tmp"
+  chmod 755 "$tmp"
+  mv -f "$tmp" "$1"
+}
 
 log "Installer revision $INSTALLER_REV (app $VERSION)"
 
@@ -211,7 +227,7 @@ fi
 
 # Launcher run inside cage: hides the X cursor at the server level
 # (XFixes), then starts the player. DISPLAY is set by cage's Xwayland.
-cat > /usr/local/bin/irl-kiosk-run <<'EOF'
+install_script /usr/local/bin/irl-kiosk-run <<'EOF'
 #!/bin/bash
 if command -v unclutter >/dev/null 2>&1; then
   # unclutter-xfixes syntax first, classic unclutter as fallback
@@ -219,7 +235,6 @@ if command -v unclutter >/dev/null 2>&1; then
 fi
 exec /opt/irl-player/IRLPlayer
 EOF
-chmod +x /usr/local/bin/irl-kiosk-run
 
 log "Writing /etc/systemd/system/$SERVICE_NAME.service ..."
 cat > "/etc/systemd/system/$SERVICE_NAME.service" <<EOF
@@ -262,7 +277,7 @@ EOF
 # --- 8. Ctrl+Alt+P hotkey: toggle kiosk (on top) <-> normal console/desktop --
 log "Installing Ctrl+Alt+P layer-toggle hotkey ..."
 
-cat > /usr/local/bin/irl-kiosk-toggle <<'EOF'
+install_script /usr/local/bin/irl-kiosk-toggle <<'EOF'
 #!/usr/bin/env bash
 # Toggle IRL Player between kiosk mode (fullscreen, on top — the default)
 # and "normal" mode (regular console login / desktop if one is installed).
@@ -286,9 +301,8 @@ else
   exec systemctl start "$SERVICE"
 fi
 EOF
-chmod +x /usr/local/bin/irl-kiosk-toggle
 
-cat > /usr/local/bin/irl-hotkeyd <<'EOF'
+install_script /usr/local/bin/irl-hotkeyd <<'EOF'
 #!/usr/bin/env python3
 """Global hotkey daemon: Ctrl+Alt+P runs irl-kiosk-toggle.
 
@@ -365,7 +379,6 @@ def main():
 if __name__ == "__main__":
     main()
 EOF
-chmod +x /usr/local/bin/irl-hotkeyd
 
 cat > /etc/systemd/system/irl-player-hotkey.service <<'EOF'
 [Unit]
@@ -395,7 +408,7 @@ EOF
 # so a forgotten unpaired device doesn't grind itself down every 2 hours.
 log "Installing freeze watchdog ..."
 
-cat > /usr/local/bin/irl-watchdog <<'EOF'
+install_script /usr/local/bin/irl-watchdog <<'EOF'
 #!/usr/bin/env bash
 # IRL Player freeze watchdog. See install.sh for the design.
 set -u
@@ -493,7 +506,6 @@ while true; do
   grace_until=$((now + GRACE))
 done
 EOF
-chmod +x /usr/local/bin/irl-watchdog
 
 cat > /etc/systemd/system/irl-player-watchdog.service <<'EOF'
 [Unit]
@@ -551,18 +563,28 @@ APT::Periodic::AutocleanInterval "7";
 EOF
 systemctl enable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
 
-# --- 10b. Cap the systemd journal ---------------------------------------------
-# On images with a persistent journal the default cap is 10% of the fs
-# (~1.6 GB of a 16 GB eMMC) and the minute-cadence timers churn it forever.
-# 100 MB is weeks of kiosk logs — plenty for debugging. No journald restart
-# (it can wedge running services' stdout streams): trim now with a vacuum,
-# the cap enforces itself from the next rotation/boot.
-log "Capping systemd journal size ..."
+# --- 10b. Persistent, capped systemd journal ----------------------------------
+# Logs must survive a reboot or power cut (rev >= 33): an outage or a failed
+# update is only diagnosable afterwards if the journal is on disk. Storage=
+# persistent + the /var/log/journal directory (a Lite image ships without it
+# and logs to RAM, gone at every boot). The cap: with a persistent journal the
+# default is 10% of the fs (~1.6 GB of a 16 GB eMMC) and the minute-cadence
+# timers churn it forever - 100 MB is weeks of kiosk logs, rotated in 16 MB
+# files, oldest dropped first. No journald restart (it can wedge running
+# services' stdout streams): the directory + `journalctl --flush` (SIGUSR1)
+# make the running daemon move to disk right away, the vacuum trims now, and
+# the cap enforces itself from the next rotation.
+log "Persistent journal (100 MB cap) ..."
 mkdir -p /etc/systemd/journald.conf.d
 cat > /etc/systemd/journald.conf.d/irl-player.conf <<'EOF'
 [Journal]
+Storage=persistent
 SystemMaxUse=100M
+SystemMaxFileSize=16M
 EOF
+mkdir -p /var/log/journal
+systemd-tmpfiles --create --prefix /var/log/journal >/dev/null 2>&1 || true
+journalctl --flush >/dev/null 2>&1 || true
 journalctl --vacuum-size=100M >/dev/null 2>&1 || true
 
 # --- 11. Network watchdog: nudge a dead connection, record the outage ---------
@@ -582,7 +604,7 @@ log "Installing network watchdog ..."
 # state of the pre-rev-29 reboot ladder - no longer read by anything
 rm -f /var/lib/irl-player/last-netwatch-reboot /var/lib/irl-player/netwatch-reboots
 
-cat > /usr/local/bin/irl-netwatch <<'EOF'
+install_script /usr/local/bin/irl-netwatch <<'EOF'
 #!/usr/bin/env bash
 # IRL Player network watchdog. See install.sh for the design.
 set -u
@@ -643,7 +665,6 @@ while true; do
   fi
 done
 EOF
-chmod +x /usr/local/bin/irl-netwatch
 
 cat > /etc/systemd/system/irl-player-netwatch.service <<'EOF'
 [Unit]
@@ -1382,7 +1403,7 @@ GATEWAY_CA_EOF
 # Unknown devices auto-register as "pending" in the panel; approve them
 # there. Rotation = edit the config in the panel (devices refresh within a
 # day via RuntimeMaxSec, or instantly on systemctl restart irl-gateway).
-cat > /usr/local/bin/irl-gateway-config <<'GWCONF_EOF'
+install_script /usr/local/bin/irl-gateway-config <<'GWCONF_EOF'
 #!/usr/bin/env bash
 # Fetches the fleet MQTT config for the IRL gateway from the config service.
 set -u
@@ -1408,7 +1429,6 @@ echo "config fetch failed and no cached config — retrying shortly" >&2
 sleep 55
 exit 1
 GWCONF_EOF
-chmod +x /usr/local/bin/irl-gateway-config
 
 # deps live in a venv: paho-mqtt >= 2.0 is newer than the apt package
 if [ ! -x /opt/irl-gateway/venv/bin/python3 ]; then
@@ -1458,7 +1478,7 @@ EOF
 # up on the next post.
 log "Installing telemetry reporter (5-minute device snapshot to the fleet panel) ..."
 
-cat > /usr/local/bin/irl-telemetry <<'TELEMETRY_EOF'
+install_script /usr/local/bin/irl-telemetry <<'TELEMETRY_EOF'
 #!/usr/bin/env bash
 # Posts a device-health snapshot to the fleet config panel.
 # Fire-and-forget: any failure is silent. `irl-telemetry --print` shows the
@@ -1768,7 +1788,6 @@ if [ -n "$REBOOT" ]; then
 fi
 exit 0
 TELEMETRY_EOF
-chmod +x /usr/local/bin/irl-telemetry
 sed -i "s|@INSTALLER_REV@|$INSTALLER_REV|" /usr/local/bin/irl-telemetry
 
 cat > /etc/systemd/system/irl-player-telemetry.service <<'EOF'
@@ -1808,7 +1827,7 @@ EOF
 # offline device always means ON.
 log "Installing fleet screen switch (screen.txt on the website) ..."
 
-cat > /usr/local/bin/irl-screen <<'EOF'
+install_script /usr/local/bin/irl-screen <<'EOF'
 #!/usr/bin/env bash
 # IRL Player screen switch. Fetches screen.txt from the website every minute:
 # "0" = all displays off (player keeps running), anything else = displays on.
@@ -1852,7 +1871,6 @@ if [ "$want" != "$prev" ]; then
   echo "screen switch: displays $want (screen.txt=${val:-unreachable})"
 fi
 EOF
-chmod +x /usr/local/bin/irl-screen
 sed -i "s|@BASE_URL@|$BASE_URL|" /usr/local/bin/irl-screen
 
 cat > /etc/systemd/system/irl-player-screen.service <<'EOF'
@@ -1884,7 +1902,7 @@ EOF
 log "Setting up auto-update (reinstalls when the published install.sh changes) ..."
 mkdir -p /etc/irl-player
 
-cat > /usr/local/bin/irl-update <<'EOF'
+install_script /usr/local/bin/irl-update <<'EOF'
 #!/usr/bin/env bash
 # IRL Player auto-update check. Fetches the published install.sh and, if it
 # differs from the copy this device was installed with, re-runs it.
@@ -1968,10 +1986,11 @@ main() {
   fi
 }
 
-main "$@"
+# exit on the same line as the call: bash never reads past it, whatever the
+# file on disk looks like by then
+main "$@"; exit $?
 EOF
 sed -i "s|@BASE_URL@|$BASE_URL|" /usr/local/bin/irl-update
-chmod +x /usr/local/bin/irl-update
 
 # Record the hash of this exact installer so the updater only fires on a
 # future change. When piped from curl there is no file to hash, so fetch the

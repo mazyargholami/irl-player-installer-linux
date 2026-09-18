@@ -72,7 +72,7 @@ STUB
 # userdel/loginctl/pkill are stubbed so uninstall.sh can never touch the real
 # irlplayer user or its processes when the suite runs on a provisioned device
 # (journalctl too: the installer's --vacuum-size must not trim the host journal)
-for t in apt-get useradd usermod userdel loginctl pkill journalctl; do
+for t in apt-get useradd usermod userdel loginctl pkill journalctl systemd-tmpfiles; do
   printf '#!/bin/sh\nexit 0\n' > "$ROOT/bin/$t"
 done
 # vcgencmd stub: a known throttle bitmask (bits 0,2,16,18) so telemetry's
@@ -86,6 +86,7 @@ redirect() {  # rewrite absolute system paths into $ROOT
   sed -e "s|/etc/irl-player|$ROOT/etc/irl-player|g" \
       -e "s|/etc/systemd/system|$ROOT/etc/systemd/system|g" \
       -e "s|/etc/systemd/journald.conf.d|$ROOT/etc/systemd/journald.conf.d|g" \
+      -e "s|/var/log/journal|$ROOT/var/log/journal|g" \
       -e "s|/usr/local/bin|$ROOT/usr/local/bin|g" \
       -e "s|/var/lock|$ROOT/var/lock|g" \
       -e "s|/proc/device-tree/model|$ROOT/proc/model|g" \
@@ -190,6 +191,8 @@ for f in usr/local/bin/irl-kiosk-run usr/local/bin/irl-kiosk-toggle usr/local/bi
   check "[ -e '$ROOT/$f' ]" "created $f"
 done
 check "grep -q 'SystemMaxUse=100M' '$ROOT/etc/systemd/journald.conf.d/irl-player.conf'" "journal capped at 100M"
+check "grep -q 'Storage=persistent' '$ROOT/etc/systemd/journald.conf.d/irl-player.conf' && [ -d '$ROOT/var/log/journal' ]" "journal is persistent (Storage=persistent + /var/log/journal created)"
+check "grep -q 'SystemMaxFileSize=16M' '$ROOT/etc/systemd/journald.conf.d/irl-player.conf'" "journal rotates in 16M files"
 check "grep -q 'AutocleanInterval \"7\"' '$ROOT/etc/apt/apt.conf.d/60irl-auto-upgrades'" "apt archive cache pruned weekly (AutocleanInterval)"
 check "! [ -e '$ROOT/opt/irl-gateway/mqtt.json' ]" "installer itself writes no config file (helper's job)"
 check "! grep -q 'MQTT_JSON_ENC\|GWK=' '$SITE/install.sh'" "no credential blob or passphrase left in the installer"
@@ -254,6 +257,8 @@ done
 check "PYTHONPYCACHEPREFIX='$E2E/pycache' python3 -m py_compile '$ROOT/usr/local/bin/irl-hotkeyd'" "python syntax irl-hotkeyd"
 check "PYTHONPYCACHEPREFIX='$E2E/pycache' python3 -m py_compile '$ROOT/opt/irl-gateway/gateway.py'" "python syntax gateway.py"
 check "grep -q 'BASE_URL=\"http://localhost:$PORT\"' '$ROOT/usr/local/bin/irl-update'" "BASE_URL baked into irl-update"
+check "! grep -q '^cat > $ROOT/usr/local/bin/' '$SITE/install.sh'" "no installer-managed script is written in place (cat >): all go through install_script"
+check "grep -q '^main \"\$@\"; exit \$?$' '$ROOT/usr/local/bin/irl-update'" "irl-update exits on the same line as the main call"
 check "grep -q 'ExecStart=/usr/bin/cage' '$ROOT/etc/systemd/system/irl-player-kiosk.service'" "kiosk unit ExecStart"
 check "grep -q 'OnUnitActiveSec=1h' '$ROOT/etc/systemd/system/irl-player-update.timer'" "timer runs hourly"
 check "grep -q 'OnUnitActiveSec=5min' '$ROOT/etc/systemd/system/irl-player-telemetry.timer'" "telemetry posts every 5 minutes (panel down-detection + command latency)"
@@ -365,7 +370,8 @@ echo "== 5. Canary rollout: fleet devices wait, canary goes first =="
 # from the NEW script) so publishing an urgent release with 0 doesn't break them.
 awk '/^# --- 8\. /{skip=1} /^# --- 9\. /{skip=0} !skip' "$SITE/install.sh" \
   | sed -e '/irl-player-hotkey/d' -e '/irl-hotkeyd/d' -e "s/^INSTALLER_REV=$REV/INSTALLER_REV=$((REV+1))/" \
-        -e 's/^FLEET_DELAY_HOURS=[0-9][0-9]*$/FLEET_DELAY_HOURS=24/' > "$SITE/install.v2"
+        -e 's/^FLEET_DELAY_HOURS=[0-9][0-9]*$/FLEET_DELAY_HOURS=24/' \
+        -e 's/^# IRL Player auto-update check\. .*/&\n# v2: these lines make irl-update LONGER than v1. The v1 process running this\n# update must not be corrupted by the rewrite (it keeps reading its old inode;\n# an in-place cat > would make it resume mid-way through this longer file).\n# padding padding padding padding padding padding padding padding padding\n# padding padding padding padding padding padding padding padding padding/' > "$SITE/install.v2"
 mv "$SITE/install.v2" "$SITE/install.sh"
 bash -n "$SITE/install.sh" && ok "v2 script valid" || bad "v2 script broken"
 "$ROOT/usr/local/bin/irl-update" > "$E2E/gate.log" 2>&1
@@ -379,8 +385,18 @@ PH="$(awk '{print $1}' "$ROOT/etc/irl-player/pending-update")"
 echo "$PH 0" > "$ROOT/etc/irl-player/pending-update"
 
 echo "== 6. Auto-update applies after the delay: deleted service propagates =="
-"$ROOT/usr/local/bin/irl-update" > "$E2E/update.log" 2>&1
+# Simulate the pre-rev-33 fleet: the running v1 updater has no same-line exit
+# after main, so only the installer's atomic script replacement protects it
+# from reading the tail of the longer v2 file it is being replaced with.
+sed -i 's/^main "\$@"; exit \$?$/main "$@"/' "$ROOT/usr/local/bin/irl-update"
+grep -q '^main "\$@"$' "$ROOT/usr/local/bin/irl-update" && ok "v1 updater stripped to a bare main call (pre-rev-33 fleet state)" || bad "could not strip v1 updater's exit line"
+"$ROOT/usr/local/bin/irl-update" > "$E2E/update.log" 2>&1; urc=$?
 check "grep -q 'install.sh changed' '$E2E/update.log'" "change detected"
+check "[ $urc -eq 0 ] && ! grep -qi 'syntax error' '$E2E/update.log'" "updater process survived its own (longer) replacement: exit 0, no bash error"
+check "[ \"\$(grep -c 'update applied' '$E2E/update.log')\" = 1 ]" "exactly one 'update applied' (old process did not execute the new file's tail)"
+check "[ \"\$(cat '$ROOT/etc/irl-player/installer.sha256')\" = \"\$(sha256sum '$SITE/install.sh' | awk '{print \$1}')\" ]" "stored hash is the served script's hash (not emptied by the old process)"
+check "grep -q 'v2: these lines make irl-update LONGER' '$ROOT/usr/local/bin/irl-update'" "device now runs the longer v2 updater"
+check "[ -z \"\$(ls '$ROOT/usr/local/bin/'*.?????? 2>/dev/null)\" ]" "no temp files left behind by the atomic script writes"
 check "grep -q \"Installer revision $((REV+1))\" '$E2E/update.log'" "new script executed"
 check "grep -q 'update applied' '$E2E/update.log'" "update reported applied"
 check "[ ! -e '$ROOT/etc/systemd/system/irl-player-hotkey.service' ]" "deleted service unit removed from device"
