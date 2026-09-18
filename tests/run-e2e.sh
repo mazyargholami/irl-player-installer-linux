@@ -191,6 +191,8 @@ for f in usr/local/bin/irl-kiosk-run usr/local/bin/irl-kiosk-toggle usr/local/bi
   check "[ -e '$ROOT/$f' ]" "created $f"
 done
 check "grep -q 'SystemMaxUse=100M' '$ROOT/etc/systemd/journald.conf.d/irl-player.conf'" "journal capped at 100M"
+check "grep -qx 'restart irl-player-watchdog' '$ROOT/systemctl.log' && grep -qx 'restart irl-player-netwatch' '$ROOT/systemctl.log'" "watchdog and netwatch restarted so new code runs now (not at the weekly reboot)"
+check "grep -qx 'enable irl-player-watchdog' '$ROOT/systemctl.log' && grep -qx 'enable irl-player-netwatch' '$ROOT/systemctl.log'" "watchdog and netwatch still enabled at boot"
 check "grep -q 'Storage=persistent' '$ROOT/etc/systemd/journald.conf.d/irl-player.conf' && [ -d '$ROOT/var/log/journal' ]" "journal is persistent (Storage=persistent + /var/log/journal created)"
 check "grep -q 'SystemMaxFileSize=16M' '$ROOT/etc/systemd/journald.conf.d/irl-player.conf'" "journal rotates in 16M files"
 check "grep -q 'AutocleanInterval \"7\"' '$ROOT/etc/apt/apt.conf.d/60irl-auto-upgrades'" "apt archive cache pruned weekly (AutocleanInterval)"
