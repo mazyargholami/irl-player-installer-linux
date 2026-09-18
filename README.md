@@ -138,6 +138,17 @@ later run succeeds, which stamps `/var/lib/irl-player/last-update-ok`
 instead (reported as `last_update_ok_at`). A successful update posts
 immediately too, so the panel shows the new revision within seconds.
 
+**Degraded updates are reported too (rev 35).** Some steps are allowed to
+fail without aborting the run — an optional package (grim, wlr-randr,
+unclutter, unattended-upgrades), the gateway's Python venv, a timer that
+would not enable. Each such failure is logged *and* recorded as a line in
+`/var/lib/irl-player/last-update-warnings`, which the device sends as
+`last_update_warnings` (a list, `[]` after a clean run). The update still
+counts as applied, so the panel can show the device as degraded rather than
+green or red. And if a reinstall never returns at all (a reboot or power
+loss mid-run), the updater notices its own leftover marker on the next
+hourly check and records `rev ? reinstall interrupted` as the update error.
+
 ```bash
 sudo systemctl list-timers irl-player-update.timer   # when is the next check?
 journalctl -u irl-player-update -e                   # update logs
@@ -259,7 +270,8 @@ the compositor is driving, the panel's native mode, physical size and
 diagonal, and the make / model from the EDID; plus a flat
 `screen_resolution` such as `1024x600` — re-read every post, so a swapped
 monitor shows up within 5 minutes), and the **outcome of the last update**
-(`last_update_ok_at`, `last_update_error` / `last_update_error_at`, see
+(`last_update_ok_at`, `last_update_error` / `last_update_error_at`, and
+the tolerated failures of that run in `last_update_warnings`, see
 [Auto-update](#auto-update)). The panel calls a screen **down** after 15
 silent minutes and shows how long it has been down, so the community
 manager can call the venue instead of the device guessing.

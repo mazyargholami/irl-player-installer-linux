@@ -91,7 +91,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=34
+INSTALLER_REV=35
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; record_failure "$*"; exit 1; }
@@ -110,6 +110,20 @@ record_failure() {
   printf '%s rev %s %s\n' "$(date +%s)" "$INSTALLER_REV" "$*" > "$UPDATE_STATE_DIR/last-update-error" 2>/dev/null || true
 }
 trap 'record_failure "line $LINENO: $BASH_COMMAND"' ERR
+
+# Warnings (rev >= 35): a step the installer tolerates but the device is
+# worse off without (an optional package, the gateway's venv, a timer that
+# would not enable) goes through warn() instead of "|| log". It is logged
+# like before AND appended to /var/lib/irl-player/last-update-warnings, which
+# irl-telemetry sends as last_update_warnings - so a run that "succeeded"
+# with a missing gateway shows as degraded in the panel instead of green.
+# The file holds this run's warnings only: cleared here, at the start.
+rm -f "$UPDATE_STATE_DIR/last-update-warnings" 2>/dev/null || true
+warn() {
+  printf '\033[1;33m[irl-player] WARNING:\033[0m %s\n' "$*" >&2
+  mkdir -p "$UPDATE_STATE_DIR" 2>/dev/null || return 0
+  printf '%s\n' "$*" >> "$UPDATE_STATE_DIR/last-update-warnings" 2>/dev/null || true
+}
 
 # Scripts are replaced atomically (temp file + rename = a new inode): a
 # running copy - the updater that is re-running this very installer, a
@@ -161,13 +175,13 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq cage xwayland curl ca-certificates python3-evdev
 # transparent cursor theme + X-level cursor hiding = invisible mouse pointer
-apt-get install -y -qq xcursor-transparent-theme || log "xcursor-transparent-theme unavailable"
-apt-get install -y -qq unclutter-xfixes || apt-get install -y -qq unclutter || log "unclutter unavailable; cursor may be visible"
+apt-get install -y -qq xcursor-transparent-theme || warn "xcursor-transparent-theme unavailable; cursor may be visible"
+apt-get install -y -qq unclutter-xfixes || apt-get install -y -qq unclutter || warn "unclutter unavailable; cursor may be visible"
 # grim takes the tiny screenshots the freeze watchdog compares
-apt-get install -y -qq grim || log "grim unavailable; freeze watchdog will stay idle"
+apt-get install -y -qq grim || warn "grim unavailable; freeze watchdog will stay idle"
 # wlr-randr drives the fleet screen switch (13b) and tells telemetry the mode
 # the compositor is actually running (13)
-apt-get install -y -qq wlr-randr || log "wlr-randr unavailable; screen switch idle, telemetry reports native display mode only"
+apt-get install -y -qq wlr-randr || warn "wlr-randr unavailable; screen switch idle, telemetry reports native display mode only"
 
 # --- 3. Get and install the .deb --------------------------------------------
 # If a local copy sits next to this script (repo checkout), use it;
@@ -539,7 +553,7 @@ systemctl daemon-reexec 2>/dev/null || true
 # device next reboots anyway. irl-player itself is blacklisted so app
 # versions stay controlled exclusively by this script.
 log "Enabling unattended OS security updates ..."
-apt-get install -y -qq unattended-upgrades || log "unattended-upgrades unavailable"
+apt-get install -y -qq unattended-upgrades || warn "unattended-upgrades unavailable; no automatic OS security updates"
 mkdir -p /etc/apt/apt.conf.d
 
 cat > /etc/apt/apt.conf.d/52irl-unattended-upgrades <<'EOF'
@@ -561,7 +575,7 @@ APT::Periodic::Unattended-Upgrade "1";
 // otherwise slowly fill the small eMMC with old archives
 APT::Periodic::AutocleanInterval "7";
 EOF
-systemctl enable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+systemctl enable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || warn "could not enable the apt-daily timers; no automatic OS security updates"
 
 # --- 10b. Persistent, capped systemd journal ----------------------------------
 # Logs must survive a reboot or power cut (rev >= 33): an outage or a failed
@@ -1434,11 +1448,11 @@ GWCONF_EOF
 if [ ! -x /opt/irl-gateway/venv/bin/python3 ]; then
   apt-get install -y -qq python3-venv >/dev/null 2>&1 || true
   python3 -m venv /opt/irl-gateway/venv 2>/dev/null \
-    || log "WARNING: could not create the gateway venv; irl-gateway will not start"
+    || warn "could not create the gateway venv; irl-gateway will not start"
 fi
 if [ -x /opt/irl-gateway/venv/bin/pip ]; then
   /opt/irl-gateway/venv/bin/pip install --quiet "pyserial>=3.5" "paho-mqtt>=2.0" \
-    || log "WARNING: gateway dependency install failed; irl-gateway may not start"
+    || warn "gateway dependency install failed; irl-gateway may not start"
 fi
 
 cat > /etc/systemd/system/irl-gateway.service <<'EOF'
@@ -1504,6 +1518,7 @@ T_OFF_START=""; T_OFF_END=""
 # failure the installer / updater recorded (cleared by the next success)
 T_UPD_OK="$(cat "$STATE_DIR/last-update-ok" 2>/dev/null)" || true
 T_UPD_ERR_AT=""; T_UPD_ERR=""
+T_UPD_WARN_FILE="$STATE_DIR/last-update-warnings"
 if [ -r "$STATE_DIR/last-update-error" ]; then
   T_UPD_ERR_AT="$(awk 'NR==1{print $1}' "$STATE_DIR/last-update-error" 2>/dev/null)" || true
   T_UPD_ERR="$(head -1 "$STATE_DIR/last-update-error" 2>/dev/null | cut -d' ' -f2- | head -c 500)" || true
@@ -1625,6 +1640,7 @@ fi
 
 export T_SERIAL T_HOSTNAME T_MODEL T_OS T_REV T_APP T_CANARY T_UPTIME \
        T_BOOTTIME T_OFF_START T_OFF_END T_ACKS T_UPD_OK T_UPD_ERR_AT T_UPD_ERR \
+       T_UPD_WARN_FILE \
        T_CPUTEMP T_THROTTLED T_DISKFREE T_DISKPCT T_MEMFREE \
        T_SSID T_SIGNAL T_KIOSK T_GATEWAY T_IP \
        T_DEVICE_ID T_SCREEN T_DEVICE_TOKEN T_DISPLAYS
@@ -1652,6 +1668,15 @@ def throttled(v):
         "throttled_occurred":     bool(bits & (1 << 18)),
     }
 e = os.environ.get
+def warnings(path):
+    # last-update-warnings: one tolerated-but-degrading step per line, written
+    # by the installer's warn(). Always a list; [] when the last run was clean.
+    try:
+        with open(path or "", errors="replace") as f:
+            lines = [l.rstrip("\n")[:200] for l in f]
+    except OSError:
+        return []
+    return [l for l in lines if l.strip()][:20]
 try:
     displays = json.loads(e("T_DISPLAYS") or "[]")
     assert isinstance(displays, list)
@@ -1677,6 +1702,7 @@ print(json.dumps({
     "last_update_ok_at": num(e("T_UPD_OK"), int),
     "last_update_error_at": num(e("T_UPD_ERR_AT"), int),
     "last_update_error": e("T_UPD_ERR") or None,
+    "last_update_warnings": warnings(e("T_UPD_WARN_FILE")),
     "cpu_temp_c": num(e("T_CPUTEMP"), float),
     "throttled_flags": throttled(e("T_THROTTLED")),
     "disk_free_mb": num(e("T_DISKFREE"), int),
@@ -1922,6 +1948,23 @@ main() {
   exec 9>/var/lock/irl-update.lock
   flock -n 9 || exit 0
 
+  ERR_F=/var/lib/irl-player/last-update-error
+  # A reinstall writes this marker before it starts and removes it when it
+  # returns (either way). Finding one here - with the lock held, so nobody is
+  # mid-install - means the last attempt never returned: a reboot, power loss
+  # or a kill mid-run, which the installer's ERR trap cannot see. Record it
+  # the way a failed run would (the retry below supersedes it).
+  IN_PROGRESS=/var/lib/irl-player/update-in-progress
+  if [ -f "$IN_PROGRESS" ]; then
+    rm -f "$IN_PROGRESS"
+    if [ ! -f "$ERR_F" ]; then
+      mkdir -p "$(dirname "$ERR_F")"
+      echo "$(date +%s) rev ? reinstall interrupted" > "$ERR_F"
+      echo "previous reinstall was interrupted — recorded for the panel" >&2
+      systemctl start --no-block irl-player-telemetry.service 2>/dev/null || true
+    fi
+  fi
+
   # refuse protocol downgrades on the fetch that gets executed as root
   HTTPS_ONLY=""
   case "$BASE_URL" in https://*) HTTPS_ONLY="--proto =https --tlsv1.2";; esac
@@ -1963,16 +2006,18 @@ main() {
   echo "install.sh changed (${OLD:-none} -> $NEW) — reinstalling"
   # this attempt supersedes any earlier failure record (a success clears it,
   # a failure writes a fresh one below)
-  ERR_F=/var/lib/irl-player/last-update-error
   rm -f "$ERR_F"
-  if bash "$TMP"; then
+  mkdir -p "$(dirname "$IN_PROGRESS")"
+  date +%s > "$IN_PROGRESS"
+  bash "$TMP"; rc=$?
+  rm -f "$IN_PROGRESS"
+  if [ "$rc" -eq 0 ]; then
     echo "$NEW" > "$STATE"
     rm -f "$PENDING"
     echo "update applied"
     # tell the panel about the new revision now rather than at the next 5-min tick
     systemctl start --no-block irl-player-telemetry.service 2>/dev/null || true
   else
-    rc=$?
     # The installer's own ERR trap normally records the failing line. Cover
     # the cases where it never got the chance (syntax error, killed early).
     if [ ! -f "$ERR_F" ]; then
@@ -2108,11 +2153,11 @@ systemctl enable irl-player-watchdog >/dev/null
 systemctl restart irl-player-watchdog
 systemctl enable irl-player-netwatch >/dev/null
 systemctl restart irl-player-netwatch
-systemctl enable --now irl-gateway >/dev/null 2>&1 || true
+systemctl enable --now irl-gateway >/dev/null 2>&1 || warn "could not enable irl-gateway"
 systemctl try-restart irl-gateway >/dev/null 2>&1 || true
-systemctl enable --now irl-player-telemetry.timer >/dev/null 2>&1 || true
-systemctl enable --now irl-player-screen.timer >/dev/null 2>&1 || true
-systemctl enable --now irl-player-reboot.timer >/dev/null 2>&1 || true
+systemctl enable --now irl-player-telemetry.timer >/dev/null 2>&1 || warn "could not enable irl-player-telemetry.timer; device will go silent in the panel"
+systemctl enable --now irl-player-screen.timer >/dev/null 2>&1 || warn "could not enable irl-player-screen.timer"
+systemctl enable --now irl-player-reboot.timer >/dev/null 2>&1 || warn "could not enable irl-player-reboot.timer; no weekly reboot"
 
 log "Starting kiosk ..."
 systemctl restart "$SERVICE_NAME"

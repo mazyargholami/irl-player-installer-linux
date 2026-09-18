@@ -217,6 +217,8 @@ check "grep -q 'apt-get install -y -qq wlr-randr' '$SITE/install.sh'" "installer
 # rev 32: a completed run stamps last-update-ok (reported as last_update_ok_at)
 # and leaves no failure record
 check "[ -s '$ROOT/var/lib/irl-player/last-update-ok' ] && [ ! -e '$ROOT/var/lib/irl-player/last-update-error' ]" "completed install stamps last-update-ok and leaves no failure record"
+check "[ ! -e '$ROOT/var/lib/irl-player/last-update-warnings' ]" "clean install records no warnings"
+check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"last_update_warnings\"]==[], d'" "telemetry: last_update_warnings is [] after a clean install"
 check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys,time; d=json.load(sys.stdin); assert isinstance(d[\"last_update_ok_at\"],int) and abs(time.time()-d[\"last_update_ok_at\"])<600, d; assert d[\"last_update_error\"] is None and d[\"last_update_error_at\"] is None, d'" "telemetry reports last_update_ok_at and no update error"
 check "grep -q '^die() {.*record_failure .*; exit 1; }' '$SITE/install.sh'" "die() records its message for the panel"
 # rev 29 fields: boot_time (now - uptime), the last outage window recorded by
@@ -452,6 +454,52 @@ check "[ ! -e '$ROOT/var/lib/irl-player/last-update-error' ] && [ -s '$ROOT/var/
 TOUTR=$("$ROOT/usr/local/bin/irl-telemetry" --print 2>/dev/null || true)
 check "printf '%s' \"\$TOUTR\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"last_update_error\"] is None and d[\"last_update_error_at\"] is None, d'" "telemetry: update error gone after the recovery"
 check "grep -c 'start --no-block irl-player-telemetry.service' '$ROOT/systemctl.log' | grep -q '^3$'" "each reinstall outcome (2 failures + 1 success) pushed a telemetry post"
+
+echo "== 7c. Degraded run (optional step failed) is reported as warnings, not hidden =="
+# only grim fails to install: the run must still complete (hash advanced,
+# last-update-ok stamped, no error) but record the tolerated failure and ship
+# it in telemetry, so a "successful" update that lost a feature is not green
+printf '#!/bin/sh\ncase "$*" in *grim*) exit 1;; esac\nexit 0\n' > "$ROOT/bin/apt-get"
+printf '# degraded-run marker\n' >> "$SITE/install.sh"
+"$ROOT/usr/local/bin/irl-update" > "$E2E/degraded.log" 2>&1; rc=$?
+check "[ $rc -eq 0 ] && grep -q 'update applied' '$E2E/degraded.log'" "optional package missing: update still applies"
+check "grep -q 'WARNING:.*grim unavailable' '$E2E/degraded.log'" "warning printed for the terminal / journal"
+check "[ ! -e '$ROOT/var/lib/irl-player/last-update-error' ] && [ -s '$ROOT/var/lib/irl-player/last-update-ok' ]" "degraded run is not a failure (ok stamped, no error)"
+check "grep -q '^grim unavailable' '$ROOT/var/lib/irl-player/last-update-warnings'" "warning recorded in last-update-warnings"
+check "[ \"\$(wc -l < '$ROOT/var/lib/irl-player/last-update-warnings')\" -eq 1 ]" "only the step that failed is recorded"
+TOUTW=$("$ROOT/usr/local/bin/irl-telemetry" --print 2>/dev/null || true)
+check "printf '%s' \"\$TOUTW\" | python3 -c 'import json,sys; d=json.load(sys.stdin); w=d[\"last_update_warnings\"]; assert isinstance(w,list) and len(w)==1 and w[0].startswith(\"grim unavailable\"), w; assert d[\"last_update_error\"] is None, d'" "telemetry reports last_update_warnings with last_update_error still null"
+# apt healthy again: the next run starts from a clean slate
+printf '#!/bin/sh\nexit 0\n' > "$ROOT/bin/apt-get"
+printf '# clean-run marker\n' >> "$SITE/install.sh"
+"$ROOT/usr/local/bin/irl-update" > /dev/null 2>&1
+check "[ ! -e '$ROOT/var/lib/irl-player/last-update-warnings' ]" "clean run clears last-update-warnings"
+TOUTW=$("$ROOT/usr/local/bin/irl-telemetry" --print 2>/dev/null || true)
+check "printf '%s' \"\$TOUTW\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"last_update_warnings\"]==[], d'" "telemetry: last_update_warnings back to [] after a clean run"
+
+echo "== 7d. Interrupted reinstall (reboot / power loss mid-run) is recorded =="
+# the updater keeps a marker while the installer runs. One still present on
+# the next check (the lock is free, so nobody is mid-install) means the last
+# attempt never returned - no ERR trap fired - so the updater records it.
+check "[ ! -e '$ROOT/var/lib/irl-player/update-in-progress' ]" "no in-progress marker left behind by a completed reinstall"
+echo 1700000000 > "$ROOT/var/lib/irl-player/update-in-progress"
+: > "$ROOT/systemctl.log"
+"$ROOT/usr/local/bin/irl-update" > "$E2E/interrupted.log" 2>&1; rc=$?
+check "[ $rc -eq 0 ]" "stale marker + unchanged script: check still exits 0 (converged)"
+check "[ ! -e '$ROOT/var/lib/irl-player/update-in-progress' ]" "stale marker consumed"
+check "grep -Eq '^[0-9]+ rev \? reinstall interrupted$' '$ROOT/var/lib/irl-player/last-update-error'" "interrupted reinstall recorded as an update error"
+check "grep -q 'start --no-block irl-player-telemetry.service' '$ROOT/systemctl.log'" "interruption pushes a telemetry post"
+TOUTI=$("$ROOT/usr/local/bin/irl-telemetry" --print 2>/dev/null || true)
+check "printf '%s' \"\$TOUTI\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"last_update_error\"]==\"rev ? reinstall interrupted\", d'" "telemetry carries the interruption"
+# a marker next to an error the ERR trap already wrote: nothing to add
+printf '1700000001 rev 35 line 1: e2e-fake-failure\n' > "$ROOT/var/lib/irl-player/last-update-error"
+touch "$ROOT/var/lib/irl-player/update-in-progress"
+"$ROOT/usr/local/bin/irl-update" > /dev/null 2>&1
+check "grep -q 'e2e-fake-failure' '$ROOT/var/lib/irl-player/last-update-error' && [ ! -e '$ROOT/var/lib/irl-player/update-in-progress' ]" "marker beside an existing error: error kept, marker consumed"
+# the next completed reinstall clears it like any other failure
+printf '# post-interruption marker\n' >> "$SITE/install.sh"
+"$ROOT/usr/local/bin/irl-update" > /dev/null 2>&1
+check "[ ! -e '$ROOT/var/lib/irl-player/last-update-error' ] && [ ! -e '$ROOT/var/lib/irl-player/update-in-progress' ]" "next completed reinstall clears the interruption record"
 
 echo "== 8. Concurrency: second updater can't run while one holds the lock =="
 ( exec 9>"$ROOT/var/lock/irl-update.lock"; flock 9; "$ROOT/usr/local/bin/irl-update"; echo "rc=$?" > "$E2E/lock.rc" )
