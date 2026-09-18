@@ -91,10 +91,25 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=30
+INSTALLER_REV=32
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
-die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; record_failure "$*"; exit 1; }
+
+# Failure reporting (rev >= 32). If this run aborts, the failing line (or the
+# die() message) lands in /var/lib/irl-player/last-update-error as
+# "<epoch> rev <N> <what>", and irl-telemetry carries it to the panel on its
+# next post (irl-update also triggers a post right away). A later successful
+# run stamps last-update-ok and clears the error. Best-effort lines
+# ("cmd || log ...") never trip the trap - only real aborts do. set -E makes
+# functions and subshells inherit the trap.
+set -E
+UPDATE_STATE_DIR=/var/lib/irl-player
+record_failure() {
+  mkdir -p "$UPDATE_STATE_DIR" 2>/dev/null || return 0
+  printf '%s rev %s %s\n' "$(date +%s)" "$INSTALLER_REV" "$*" > "$UPDATE_STATE_DIR/last-update-error" 2>/dev/null || true
+}
+trap 'record_failure "line $LINENO: $BASH_COMMAND"' ERR
 
 log "Installer revision $INSTALLER_REV (app $VERSION)"
 
@@ -134,6 +149,9 @@ apt-get install -y -qq xcursor-transparent-theme || log "xcursor-transparent-the
 apt-get install -y -qq unclutter-xfixes || apt-get install -y -qq unclutter || log "unclutter unavailable; cursor may be visible"
 # grim takes the tiny screenshots the freeze watchdog compares
 apt-get install -y -qq grim || log "grim unavailable; freeze watchdog will stay idle"
+# wlr-randr drives the fleet screen switch (13b) and tells telemetry the mode
+# the compositor is actually running (13)
+apt-get install -y -qq wlr-randr || log "wlr-randr unavailable; screen switch idle, telemetry reports native display mode only"
 
 # --- 3. Get and install the .deb --------------------------------------------
 # If a local copy sits next to this script (repo checkout), use it;
@@ -1434,7 +1452,10 @@ EOF
 # response may queue "reboot" / "restart-kiosk" for this device (community
 # manager buttons), and the snapshot reports boot_time plus the last outage
 # window recorded by irl-netwatch, so the panel can show how long a screen
-# was down without ever rebooting it on its own.
+# was down without ever rebooting it on its own. Rev 31 adds the attached
+# displays (resolution, refresh, EDID make/model/size) so the panel knows what
+# screen hangs on each device - re-read every run, so a swapped monitor shows
+# up on the next post.
 log "Installing telemetry reporter (5-minute device snapshot to the fleet panel) ..."
 
 cat > /usr/local/bin/irl-telemetry <<'TELEMETRY_EOF'
@@ -1459,6 +1480,14 @@ T_BOOTTIME="$(awk -v now="$(date +%s)" '{print now - int($1)}' /proc/uptime 2>/d
 # last finished outage as seen by irl-netwatch ("<start> <end>", rev >= 29)
 T_OFF_START=""; T_OFF_END=""
 [ -r "$STATE_DIR/last-offline" ] && { read -r T_OFF_START T_OFF_END < "$STATE_DIR/last-offline" || true; }
+# update outcome (rev >= 32): when the last reinstall succeeded, and the last
+# failure the installer / updater recorded (cleared by the next success)
+T_UPD_OK="$(cat "$STATE_DIR/last-update-ok" 2>/dev/null)" || true
+T_UPD_ERR_AT=""; T_UPD_ERR=""
+if [ -r "$STATE_DIR/last-update-error" ]; then
+  T_UPD_ERR_AT="$(awk 'NR==1{print $1}' "$STATE_DIR/last-update-error" 2>/dev/null)" || true
+  T_UPD_ERR="$(head -1 "$STATE_DIR/last-update-error" 2>/dev/null | cut -d' ' -f2- | head -c 500)" || true
+fi
 # panel commands executed since the last delivered post (see the end of this script)
 T_ACKS="$(grep -Ex '[A-Za-z0-9_.:-]{1,64}' "$STATE_DIR/command-acks" 2>/dev/null | tr '\n' ' ')" || true
 T_CPUTEMP="$(awk '{printf "%.1f", $1/1000}' /sys/class/thermal/thermal_zone0/temp 2>/dev/null)" || true
@@ -1472,6 +1501,85 @@ T_SIGNAL="$(printf '%s' "${WIFI:-}" | awk '/signal:/{print $2; exit}')" || true
 T_KIOSK="$(systemctl is-active irl-player-kiosk 2>/dev/null)" || true
 T_GATEWAY="$(systemctl is-active irl-gateway 2>/dev/null)" || true
 T_IP="$(hostname -I 2>/dev/null | awk '{print $1}')" || true
+
+# Attached displays (rev >= 31): every connected DRM connector in sysfs, its
+# EDID decoded for make / model / physical size / native mode. The mode the
+# compositor is actually driving (plus refresh rate) comes from wlr-randr
+# through the kiosk's Wayland socket while the kiosk is up; otherwise width/
+# height fall back to the native mode. Nothing is cached - a swapped monitor
+# is reported on the next post. [] when no display is attached.
+DRM_SYSFS=/sys/class/drm
+KIOSK_USER=irlplayer
+T_WLR=""
+kuid="$(id -u "$KIOSK_USER" 2>/dev/null)" || true
+if [ -n "${kuid:-}" ]; then
+  kxdg="/run/user/$kuid"
+  ksock="$(find "$kxdg" -maxdepth 1 -name 'wayland-*' ! -name '*.lock' 2>/dev/null | head -1)"
+  if [ -n "$ksock" ]; then
+    T_WLR="$(XDG_RUNTIME_DIR="$kxdg" WAYLAND_DISPLAY="${ksock##*/}" \
+      setpriv --reuid "$KIOSK_USER" --regid "$KIOSK_USER" --init-groups wlr-randr 2>/dev/null)" || true
+  fi
+fi
+T_DISPLAYS="$(T_WLR="$T_WLR" python3 - "$DRM_SYSFS" <<'PY' 2>/dev/null
+import glob, json, math, os, re, sys
+def read(p, mode="r"):
+    try:
+        with open(p, mode) as f:
+            return f.read()
+    except OSError:
+        return None
+def edid(b):
+    d = {"make": None, "model": None, "physical_mm": None, "native_width": None, "native_height": None}
+    if not b or len(b) < 128 or b[:8] != b"\x00\xff\xff\xff\xff\xff\xff\x00":
+        return d
+    m = (b[8] << 8) | b[9]
+    letters = [(m >> s) & 31 for s in (10, 5, 0)]
+    if all(1 <= c <= 26 for c in letters):
+        d["make"] = "".join(chr(64 + c) for c in letters)
+    if b[21] and b[22]:
+        d["physical_mm"] = [b[21] * 10, b[22] * 10]
+    for i in range(54, 126, 18):          # the four 18-byte descriptors
+        t = b[i:i + 18]
+        if t[0] == 0 and t[1] == 0:
+            if t[3] == 0xFC:              # monitor name
+                d["model"] = t[5:18].decode("ascii", "replace").split("\n")[0].strip() or None
+        elif d["native_width"] is None:   # first detailed timing = preferred mode
+            d["native_width"] = ((t[4] >> 4) << 8) | t[2]
+            d["native_height"] = ((t[7] >> 4) << 8) | t[5]
+            hmm, vmm = ((t[14] >> 4) << 8) | t[12], ((t[14] & 0xF) << 8) | t[13]
+            if hmm and vmm:
+                d["physical_mm"] = [hmm, vmm]
+    return d
+# wlr-randr: 'NAME "desc"' header lines, then indented '  WxH px, R Hz (..., current)'
+current, name = {}, None
+for line in (os.environ.get("T_WLR") or "").splitlines():
+    if line and not line[0].isspace():
+        name = line.split()[0]
+    elif name and "current" in line:
+        m = re.match(r"\s*(\d+)x(\d+) px, ([\d.]+) Hz", line)
+        if m:
+            current[name] = (int(m[1]), int(m[2]), round(float(m[3]), 1))
+out = []
+for path in sorted(glob.glob(os.path.join(sys.argv[1], "card*-*"))):
+    conn = os.path.basename(path).split("-", 1)[1]
+    if "Writeback" in conn or (read(os.path.join(path, "status")) or "").strip() != "connected":
+        continue
+    d = edid(read(os.path.join(path, "edid"), "rb"))
+    if d["native_width"] is None:
+        m = re.match(r"(\d+)x(\d+)", (read(os.path.join(path, "modes")) or "").strip())
+        if m:
+            d["native_width"], d["native_height"] = int(m[1]), int(m[2])
+    w, h, hz = current.get(conn, (d["native_width"], d["native_height"], None))
+    diag = None
+    if d["physical_mm"]:
+        diag = round(math.hypot(*d["physical_mm"]) / 25.4, 1)
+    out.append({"connector": conn, "width": w, "height": h, "refresh_hz": hz,
+                "native_width": d["native_width"], "native_height": d["native_height"],
+                "physical_mm": d["physical_mm"], "diagonal_in": diag,
+                "make": d["make"], "model": d["model"]})
+print(json.dumps(out))
+PY
+)" || true
 
 # Player identity: pairing UUID + cached screen name from the Flutter app's
 # shared_preferences, and the CMS device token. The token is NOT stored on
@@ -1496,10 +1604,10 @@ if [ -n "${T_DEVICE_ID:-}" ] && [ -r "$PLAYER_ENV" ]; then
 fi
 
 export T_SERIAL T_HOSTNAME T_MODEL T_OS T_REV T_APP T_CANARY T_UPTIME \
-       T_BOOTTIME T_OFF_START T_OFF_END T_ACKS \
+       T_BOOTTIME T_OFF_START T_OFF_END T_ACKS T_UPD_OK T_UPD_ERR_AT T_UPD_ERR \
        T_CPUTEMP T_THROTTLED T_DISKFREE T_DISKPCT T_MEMFREE \
        T_SSID T_SIGNAL T_KIOSK T_GATEWAY T_IP \
-       T_DEVICE_ID T_SCREEN T_DEVICE_TOKEN
+       T_DEVICE_ID T_SCREEN T_DEVICE_TOKEN T_DISPLAYS
 
 PAYLOAD="$(python3 - <<'PY' 2>/dev/null
 import json, os
@@ -1524,6 +1632,15 @@ def throttled(v):
         "throttled_occurred":     bool(bits & (1 << 18)),
     }
 e = os.environ.get
+try:
+    displays = json.loads(e("T_DISPLAYS") or "[]")
+    assert isinstance(displays, list)
+except (ValueError, AssertionError):
+    displays = []
+first = displays[0] if displays else {}
+resolution = None
+if first.get("width") and first.get("height"):
+    resolution = "%dx%d" % (first["width"], first["height"])
 print(json.dumps({
     "serial": e("T_SERIAL", ""),
     "hostname": e("T_HOSTNAME") or None,
@@ -1537,6 +1654,9 @@ print(json.dumps({
     "last_offline_start": num(e("T_OFF_START"), int),
     "last_offline_end": num(e("T_OFF_END"), int),
     "acked_commands": (e("T_ACKS") or "").split(),
+    "last_update_ok_at": num(e("T_UPD_OK"), int),
+    "last_update_error_at": num(e("T_UPD_ERR_AT"), int),
+    "last_update_error": e("T_UPD_ERR") or None,
     "cpu_temp_c": num(e("T_CPUTEMP"), float),
     "throttled_flags": throttled(e("T_THROTTLED")),
     "disk_free_mb": num(e("T_DISKFREE"), int),
@@ -1550,6 +1670,8 @@ print(json.dumps({
     "device_id": e("T_DEVICE_ID") or None,
     "screen_identity": e("T_SCREEN") or None,
     "device_token": e("T_DEVICE_TOKEN") or None,
+    "screen_resolution": resolution,
+    "displays": displays,
 }))
 PY
 )" || true
@@ -1821,12 +1943,27 @@ main() {
   fi
 
   echo "install.sh changed (${OLD:-none} -> $NEW) — reinstalling"
+  # this attempt supersedes any earlier failure record (a success clears it,
+  # a failure writes a fresh one below)
+  ERR_F=/var/lib/irl-player/last-update-error
+  rm -f "$ERR_F"
   if bash "$TMP"; then
     echo "$NEW" > "$STATE"
     rm -f "$PENDING"
     echo "update applied"
+    # tell the panel about the new revision now rather than at the next 5-min tick
+    systemctl start --no-block irl-player-telemetry.service 2>/dev/null || true
   else
+    rc=$?
+    # The installer's own ERR trap normally records the failing line. Cover
+    # the cases where it never got the chance (syntax error, killed early).
+    if [ ! -f "$ERR_F" ]; then
+      mkdir -p "$(dirname "$ERR_F")"
+      echo "$(date +%s) rev ? reinstall exited $rc" > "$ERR_F"
+    fi
     echo "reinstall failed — will retry next cycle" >&2
+    # push the failure to the panel right away (fire-and-forget)
+    systemctl start --no-block irl-player-telemetry.service 2>/dev/null || true
     exit 1
   fi
 }
@@ -1953,6 +2090,11 @@ systemctl enable --now irl-player-reboot.timer >/dev/null 2>&1 || true
 
 log "Starting kiosk ..."
 systemctl restart "$SERVICE_NAME"
+
+# this run made it to the end: stamp it and clear any earlier failure
+mkdir -p "$UPDATE_STATE_DIR"
+date +%s > "$UPDATE_STATE_DIR/last-update-ok"
+rm -f "$UPDATE_STATE_DIR/last-update-error"
 
 log "Done. IRL Player will start fullscreen on every boot."
 log "Auto-update: checks $BASE_URL/install.sh hourly and reinstalls on change"

@@ -31,6 +31,31 @@ printf '#!/bin/sh\ntrue\n' > "$ROOT/opt/IRLPlayer" && chmod +x "$ROOT/opt/IRLPla
 mkdir -p "$ROOT/home/irlplayer" "$ROOT/opt/player-assets"
 printf '{"flutter.device_id":"test-device-uuid-0001","flutter.is_registered":true,"flutter.screen_identity":"E2E Venue Screen 1"}\n' > "$ROOT/home/irlplayer/shared_preferences.json"
 printf 'API_URL=http://localhost:%s\nBACKEND_URL=http://localhost:%s\n' "$PORT" "$PORT" > "$ROOT/opt/player-assets/.env"
+# attached displays (rev 31): a fake DRM sysfs with one connected HDMI panel
+# carrying a synthetic EDID (make DWE, name "E2E-PANEL", 470x260 mm, preferred
+# 1024x600), one disconnected port and a writeback connector to be ignored
+mkdir -p "$ROOT/sys/class/drm/card1-HDMI-A-1" "$ROOT/sys/class/drm/card1-HDMI-A-2" "$ROOT/sys/class/drm/card1-Writeback-1"
+echo connected    > "$ROOT/sys/class/drm/card1-HDMI-A-1/status"
+echo disconnected > "$ROOT/sys/class/drm/card1-HDMI-A-2/status"
+echo unknown      > "$ROOT/sys/class/drm/card1-Writeback-1/status"
+printf '1024x600\n1920x1080\n' > "$ROOT/sys/class/drm/card1-HDMI-A-1/modes"
+: > "$ROOT/sys/class/drm/card1-HDMI-A-2/modes"
+python3 - "$ROOT/sys/class/drm/card1-HDMI-A-1/edid" <<'PY'
+import sys
+e = bytearray(128)
+e[0:8] = b"\x00\xff\xff\xff\xff\xff\xff\x00"
+e[8], e[9] = 0x12, 0xE5            # manufacturer "DWE"
+e[21], e[22] = 47, 26              # 47 x 26 cm
+# descriptor 1: detailed timing 1024x600, image size 470 x 260 mm
+dtd = bytearray(18); dtd[0], dtd[1] = 0x0C, 0x20
+dtd[2], dtd[4] = 1024 & 0xFF, (1024 >> 8) << 4
+dtd[5], dtd[7] = 600 & 0xFF, (600 >> 8) << 4
+dtd[12], dtd[13], dtd[14] = 470 & 0xFF, 260 & 0xFF, ((470 >> 8) << 4) | (260 >> 8)
+e[54:72] = dtd
+# descriptor 2: monitor name
+e[72:90] = b"\x00\x00\x00\xfc\x00" + b"E2E-PANEL\n   "
+open(sys.argv[1], "wb").write(bytes(e))
+PY
 
 # --- system tool stubs --------------------------------------------------------
 cat > "$ROOT/bin/systemctl" <<STUB
@@ -74,6 +99,7 @@ redirect() {  # rewrite absolute system paths into $ROOT
       -e "s|/opt/irl-gateway|$ROOT/opt/irl-gateway|g" \
       -e "s|/home/irlplayer/.local/share/IRLPlayer|$ROOT/home/irlplayer|g" \
       -e "s|/proc/cpuinfo|$ROOT/proc/cpuinfo|g" \
+      -e "s|/sys/class/drm|$ROOT/sys/class/drm|g" \
       -e "s|https://iot-config.theirlnetwork.com/mqtt-config|http://localhost:$PORT/mqtt-config|g" \
       -e "s|https://iot-config.theirlnetwork.com/telemetry|http://localhost:$PORT/telemetry|g" \
       -e "s|/usr/share/icons|$ROOT/usr/share/icons|g" \
@@ -177,6 +203,17 @@ check "grep -q \"T_REV=.$REV.\" '$ROOT/usr/local/bin/irl-telemetry'" "installer 
 check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"device_id\"]==\"test-device-uuid-0001\", d.get(\"device_id\"); assert d[\"screen_identity\"]==\"E2E Venue Screen 1\", d.get(\"screen_identity\"); assert d[\"device_token\"]==\"tok-e2e-abcdef\", d.get(\"device_token\")'" "telemetry resolves player device_id, screen_identity, and CMS device_token"
 check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; f=json.load(sys.stdin)[\"throttled_flags\"]; assert f=={\"under_voltage_now\":True,\"freq_capped_now\":False,\"throttled_now\":True,\"under_voltage_occurred\":True,\"throttled_occurred\":True}, f'" "telemetry decodes the vcgencmd throttle bitmask (0x50005)"
 check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; p=json.load(sys.stdin)[\"disk_free_pct\"]; assert isinstance(p,float) and 0<=p<=100, p'" "telemetry reports root-fs free space as a percentage"
+# rev 31: attached displays from DRM sysfs + EDID. No kiosk socket exists at
+# this point, so width/height fall back to the EDID's preferred mode and
+# refresh is null; the disconnected port and the writeback connector are skipped
+check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; d=json.load(sys.stdin); ds=d[\"displays\"]; assert len(ds)==1, ds; x=ds[0]; assert x[\"connector\"]==\"HDMI-A-1\" and x[\"width\"]==1024 and x[\"height\"]==600 and x[\"refresh_hz\"] is None, x; assert x[\"native_width\"]==1024 and x[\"native_height\"]==600, x; assert d[\"screen_resolution\"]==\"1024x600\", d[\"screen_resolution\"]'" "telemetry reports the connected display with its native mode (kiosk down)"
+check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; x=json.load(sys.stdin)[\"displays\"][0]; assert x[\"make\"]==\"DWE\" and x[\"model\"]==\"E2E-PANEL\", x; assert x[\"physical_mm\"]==[470,260] and x[\"diagonal_in\"]==21.1, x'" "telemetry decodes the EDID make, model name and physical size"
+check "grep -q 'apt-get install -y -qq wlr-randr' '$SITE/install.sh'" "installer installs wlr-randr (screen switch + current display mode)"
+# rev 32: a completed run stamps last-update-ok (reported as last_update_ok_at)
+# and leaves no failure record
+check "[ -s '$ROOT/var/lib/irl-player/last-update-ok' ] && [ ! -e '$ROOT/var/lib/irl-player/last-update-error' ]" "completed install stamps last-update-ok and leaves no failure record"
+check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys,time; d=json.load(sys.stdin); assert isinstance(d[\"last_update_ok_at\"],int) and abs(time.time()-d[\"last_update_ok_at\"])<600, d; assert d[\"last_update_error\"] is None and d[\"last_update_error_at\"] is None, d'" "telemetry reports last_update_ok_at and no update error"
+check "grep -q '^die() {.*record_failure .*; exit 1; }' '$SITE/install.sh'" "die() records its message for the panel"
 # rev 29 fields: boot_time (now - uptime), the last outage window recorded by
 # netwatch (null until one happened), and the always-present ack list
 check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys,time; d=json.load(sys.stdin); b=d[\"boot_time\"]; assert isinstance(b,int) and abs(time.time()-b-d[\"uptime_s\"])<120, (b, d[\"uptime_s\"])'" "telemetry reports boot_time consistent with uptime_s"
@@ -367,6 +404,37 @@ check "! grep -q 'applies it in' '$E2E/canary.log'" "no wait message on canary"
 # two full reinstalls have run since section 2b wrote the gateway's CA state
 check "grep -q 'E2E-FAKE-INLINE-CA' '$ROOT/opt/irl-gateway/config-ca.pem'" "reinstalls leave config-ca.pem alone (like mqtt.json)"
 
+echo "== 7b. Failed reinstall is recorded and reported to the panel =="
+# apt is the first thing a reinstall touches: make it fail, publish a changed
+# script, and the updater must leave the stored hash alone, record the failing
+# line for telemetry, and kick an immediate telemetry post
+H_BEFORE=$(cat "$ROOT/etc/irl-player/installer.sha256")
+printf '#!/bin/sh\nexit 1\n' > "$ROOT/bin/apt-get"
+printf '# failing-reinstall marker\n' >> "$SITE/install.sh"
+: > "$ROOT/systemctl.log"
+"$ROOT/usr/local/bin/irl-update" > "$E2E/fail.log" 2>&1; rc=$?
+check "[ $rc -eq 1 ] && grep -q 'reinstall failed' '$E2E/fail.log'" "failed reinstall: updater exits 1 and says so"
+check "[ \"\$(cat '$ROOT/etc/irl-player/installer.sha256')\" = '$H_BEFORE' ]" "failed reinstall: stored hash not advanced (retries next cycle)"
+check "grep -Eq '^[0-9]+ rev [0-9]+ line [0-9]+: apt-get update' '$ROOT/var/lib/irl-player/last-update-error'" "installer's ERR trap recorded the failing line (apt-get update)"
+check "grep -q 'start --no-block irl-player-telemetry.service' '$ROOT/systemctl.log'" "failure triggers an immediate telemetry post"
+TOUTF=$("$ROOT/usr/local/bin/irl-telemetry" --print 2>/dev/null || true)
+check "printf '%s' \"\$TOUTF\" | python3 -c 'import json,sys,time; d=json.load(sys.stdin); e=d[\"last_update_error\"]; assert e and \"apt-get update\" in e and e.startswith(\"rev \"), e; assert isinstance(d[\"last_update_error_at\"],int) and abs(time.time()-d[\"last_update_error_at\"])<600, d; assert isinstance(d[\"last_update_ok_at\"],int), d'" "telemetry reports last_update_error (+ timestamp) while keeping last_update_ok_at"
+# a script bash cannot even parse never reaches the ERR trap: the updater
+# records a generic entry itself
+mv "$SITE/install.sh" "$SITE/install.sh.good"
+printf '#!/bin/bash\nFLEET_DELAY_HOURS=0\nif\n' > "$SITE/install.sh"
+"$ROOT/usr/local/bin/irl-update" > /dev/null 2>&1; rc=$?
+check "[ $rc -eq 1 ] && grep -q 'reinstall exited 2' '$ROOT/var/lib/irl-player/last-update-error'" "unparseable script: updater records a generic failure itself"
+mv "$SITE/install.sh.good" "$SITE/install.sh"
+# apt back to normal: the next cycle applies the update and clears the failure
+printf '#!/bin/sh\nexit 0\n' > "$ROOT/bin/apt-get"
+"$ROOT/usr/local/bin/irl-update" > "$E2E/recover.log" 2>&1
+check "grep -q 'update applied' '$E2E/recover.log'" "next cycle after the failure: update applied"
+check "[ ! -e '$ROOT/var/lib/irl-player/last-update-error' ] && [ -s '$ROOT/var/lib/irl-player/last-update-ok' ]" "successful run clears the failure record and stamps last-update-ok"
+TOUTR=$("$ROOT/usr/local/bin/irl-telemetry" --print 2>/dev/null || true)
+check "printf '%s' \"\$TOUTR\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"last_update_error\"] is None and d[\"last_update_error_at\"] is None, d'" "telemetry: update error gone after the recovery"
+check "grep -c 'start --no-block irl-player-telemetry.service' '$ROOT/systemctl.log' | grep -q '^3$'" "each reinstall outcome (2 failures + 1 success) pushed a telemetry post"
+
 echo "== 8. Concurrency: second updater can't run while one holds the lock =="
 ( exec 9>"$ROOT/var/lock/irl-update.lock"; flock 9; "$ROOT/usr/local/bin/irl-update"; echo "rc=$?" > "$E2E/lock.rc" )
 check "grep -q 'rc=0' '$E2E/lock.rc'" "locked: quiet exit 0, no double-run"
@@ -540,7 +608,7 @@ check "[ \"\$(tr -d '[:space:]' < '$REPO/screen.txt')\" = 1 ]" "repo screen.txt 
 cat > "$ROOT/simbin/wlr-randr" <<STUB
 #!/bin/sh
 if [ \$# -eq 0 ]; then
-  printf 'HDMI-A-1 "x"\n  Enabled: yes\nHDMI-A-2 "y"\n  Enabled: yes\n'
+  printf 'HDMI-A-1 "x"\n  Enabled: yes\n  Modes:\n    1024x600 px, 59.820999 Hz (preferred)\n    1920x1080 px, 60.000000 Hz (current)\nHDMI-A-2 "y"\n  Enabled: yes\n'
 else
   echo "\$@" >> "$ROOT/simlog-screen"
 fi
@@ -564,6 +632,27 @@ PATH="$ROOT/simbin:$PATH" "$ROOT/usr/local/bin/irl-screen" > /dev/null 2>&1
 check "grep -q -- '--on' '$ROOT/simlog-screen'" "missing screen.txt: fail-safe ON"
 check "! grep -q -- '--off' '$ROOT/simlog-screen'" "missing screen.txt: never blanks"
 cp "$REPO/screen.txt" "$SITE/screen.txt"
+
+echo "== 10c. Display telemetry: compositor's current mode + headless =="
+# With the kiosk socket up (section 9's stubs), telemetry asks wlr-randr and
+# the mode the compositor is driving (1920x1080 @ 60 here) beats the EDID's
+# native 1024x600, which stays reported as native_*.
+TOUTD=$(PATH="$ROOT/simbin:$PATH" "$ROOT/usr/local/bin/irl-telemetry" --print 2>/dev/null || true)
+check "printf '%s' \"\$TOUTD\" | python3 -c 'import json,sys; d=json.load(sys.stdin); x=d[\"displays\"][0]; assert x[\"width\"]==1920 and x[\"height\"]==1080 and x[\"refresh_hz\"]==60.0, x; assert x[\"native_width\"]==1024 and x[\"native_height\"]==600, x; assert d[\"screen_resolution\"]==\"1920x1080\", d'" "kiosk up: current compositor mode reported, native mode kept alongside"
+check "printf '%s' \"\$TOUTD\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert [x[\"connector\"] for x in d[\"displays\"]]==[\"HDMI-A-1\"], d[\"displays\"]'" "a port wlr-randr lists but sysfs calls disconnected is not reported"
+# a monitor swap is picked up on the very next run - nothing is cached
+python3 - "$ROOT/sys/class/drm/card1-HDMI-A-1/edid" <<'PY'
+import sys
+p = sys.argv[1]; e = bytearray(open(p, "rb").read())
+e[72:90] = b"\x00\x00\x00\xfc\x00" + b"SWAPPED-TV\n  "
+open(p, "wb").write(bytes(e))
+PY
+TOUTS=$("$ROOT/usr/local/bin/irl-telemetry" --print 2>/dev/null || true)
+check "printf '%s' \"\$TOUTS\" | python3 -c 'import json,sys; x=json.load(sys.stdin)[\"displays\"][0]; assert x[\"model\"]==\"SWAPPED-TV\", x'" "a swapped monitor's EDID shows up on the next run"
+echo disconnected > "$ROOT/sys/class/drm/card1-HDMI-A-1/status"
+TOUTH=$("$ROOT/usr/local/bin/irl-telemetry" --print 2>/dev/null || true)
+check "printf '%s' \"\$TOUTH\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"displays\"]==[] and d[\"screen_resolution\"] is None, d'" "headless: displays [] and screen_resolution null"
+echo connected > "$ROOT/sys/class/drm/card1-HDMI-A-1/status"
 
 echo "== 11. Uninstall removes everything =="
 bash "$SITE/uninstall.sh" > "$E2E/uninstall.log" 2>&1 && ok "uninstall.sh runs clean" || bad "uninstall.sh errored"
