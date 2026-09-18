@@ -18,7 +18,7 @@ from `packages/`. Currently supported:
 
 | Architecture | Device | Package |
 |---|---|---|
-| `arm64` | Raspberry Pi 3 / 4 / 5 / Zero 2 W (Raspberry Pi OS 64-bit, Lite or Desktop) | `packages/irl-player_1.2.5_arm64.deb` |
+| `arm64` | Raspberry Pi CM5 / 5 / 4 / 3 / Zero 2 W (Raspberry Pi OS 64-bit, Lite or Desktop) | `packages/irl-player_1.2.8_arm64.deb` |
 
 ## Repository layout
 
@@ -27,7 +27,7 @@ from `packages/`. Currently supported:
 ├── install.sh                        one-line installer (arch-aware)
 ├── uninstall.sh                      one-line uninstaller
 ├── packages/                         one .deb per architecture & version
-│   └── irl-player_1.2.5_arm64.deb
+│   └── irl-player_1.2.8_arm64.deb
 └── .github/workflows/deploy-pages.yml   auto-deploys the website to GitHub Pages
 ```
 
@@ -116,6 +116,28 @@ If nothing changed, the check exits without touching anything, so playback
 is never interrupted by a no-op check. If the device is offline the check
 just retries next hour.
 
+What a reinstall does on the device (rev ≥ 34): refreshes packages
+(installing any dependency the new script added — apt is the first step, so
+an offline or apt-broken device aborts before a single file is touched and
+keeps running the old revision), rewrites every helper script and unit,
+restarts the freeze and network watchdogs so their new code runs
+immediately instead of at the weekly reboot (their state is on disk, so
+nothing is lost), and restarts the player once — a few seconds of black
+screen. No reboot. The helper scripts are replaced **atomically** (temp
+file + rename): the updater is itself one of those scripts and is running
+while it is replaced, and an in-place rewrite once made the old copy
+execute the tail of the new file (rev 32). Never write a managed script
+with `cat >` — the e2e suite checks for it.
+
+**Failed updates are reported, not hidden.** If a reinstall aborts, the
+failing line is recorded in `/var/lib/irl-player/last-update-error`, the
+stored hash is left alone (so the device retries every hour), and the
+device posts to the fleet panel right away — the panel shows
+`last_update_error` (e.g. `rev 34 line 131: apt-get update -qq`) until a
+later run succeeds, which stamps `/var/lib/irl-player/last-update-ok`
+instead (reported as `last_update_ok_at`). A successful update posts
+immediately too, so the panel shows the new revision within seconds.
+
 ```bash
 sudo systemctl list-timers irl-player-update.timer   # when is the next check?
 journalctl -u irl-player-update -e                   # update logs
@@ -127,7 +149,7 @@ sudo irl-update                                      # force a check right now
 
 ### Adding a new architecture (e.g. x86)
 
-1. Add the build, e.g. `packages/irl-player_1.2.5_amd64.deb`
+1. Add the build, e.g. `packages/irl-player_1.2.8_amd64.deb`
 2. In `install.sh`, extend `SUPPORTED_ARCHS="arm64 amd64"`
 3. Commit and push — the installer picks the right package automatically.
    (The Raspberry Pi hardware check only applies to `arm64`; other
@@ -218,18 +240,30 @@ updates via the standard apt-daily timers (no automatic reboots), with
 `irl-player` blacklisted so app versions are controlled exclusively by
 `irl-update`. To keep a small eMMC healthy over years, downloaded update
 archives are pruned weekly (`AutocleanInterval`) and the systemd journal is
-capped at 100 MB (`/etc/systemd/journald.conf.d/irl-player.conf`).
+**persistent and capped**: 100 MB on disk in 16 MB files, oldest dropped
+first (`/etc/systemd/journald.conf.d/irl-player.conf`, `Storage=persistent`,
+`/var/log/journal` created by the installer). Logs survive reboots and power
+cuts, so an outage or a failed update can be read afterwards with
+`journalctl -b -1` — a Lite image otherwise logs to RAM and loses everything
+at every boot.
 
 ## Fleet panel: telemetry and commands
 
 Every device posts a small health snapshot (`irl-telemetry`,
 `irl-player-telemetry.timer`) to the self-hosted config panel on boot and
 **every 5 minutes**: identity, versions, CPU temperature, throttling, disk,
-memory, Wi-Fi, `uptime_s` / `boot_time`, and the last outage window recorded
-by the network watchdog (`last_offline_start` / `last_offline_end`). The
-panel calls a screen **down** after 15 silent minutes and shows how long it
-has been down, so the community manager can call the venue instead of the
-device guessing.
+memory, Wi-Fi, `uptime_s` / `boot_time`, the last outage window recorded
+by the network watchdog (`last_offline_start` / `last_offline_end`), the
+attached **display(s)** (`displays`: connector, the resolution and refresh
+the compositor is driving, the panel's native mode, physical size and
+diagonal, and the make / model from the EDID; plus a flat
+`screen_resolution` such as `1024x600` — re-read every post, so a swapped
+monitor shows up within 5 minutes), and the **outcome of the last update**
+(`last_update_ok_at`, `last_update_error` / `last_update_error_at`, see
+[Auto-update](#auto-update)). The panel calls a screen **down** after 15
+silent minutes and shows how long it has been down, so the community
+manager can call the venue instead of the device guessing.
+`sudo irl-telemetry --print` shows the exact payload a device would send.
 
 The panel's reply is the fleet's **command channel**: it may carry
 `{"commands": [{"id": "...", "type": "reboot" | "restart-kiosk"}]}` queued
@@ -344,6 +378,8 @@ journalctl -u irl-player-kiosk -f         # live logs
 sudo systemctl restart irl-player-kiosk   # restart the app
 sudo systemctl stop irl-player-kiosk      # stop (frees tty1 until reboot)
 sudo irl-kiosk-toggle                     # same as pressing Ctrl+Alt+P
+sudo irl-telemetry --print                # what the device reports to the panel
+journalctl -b -1 -u irl-player-update     # update log from the previous boot (journal is persistent)
 ```
 
 ## Uninstall
