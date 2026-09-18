@@ -91,10 +91,25 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=31
+INSTALLER_REV=32
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
-die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; record_failure "$*"; exit 1; }
+
+# Failure reporting (rev >= 32). If this run aborts, the failing line (or the
+# die() message) lands in /var/lib/irl-player/last-update-error as
+# "<epoch> rev <N> <what>", and irl-telemetry carries it to the panel on its
+# next post (irl-update also triggers a post right away). A later successful
+# run stamps last-update-ok and clears the error. Best-effort lines
+# ("cmd || log ...") never trip the trap - only real aborts do. set -E makes
+# functions and subshells inherit the trap.
+set -E
+UPDATE_STATE_DIR=/var/lib/irl-player
+record_failure() {
+  mkdir -p "$UPDATE_STATE_DIR" 2>/dev/null || return 0
+  printf '%s rev %s %s\n' "$(date +%s)" "$INSTALLER_REV" "$*" > "$UPDATE_STATE_DIR/last-update-error" 2>/dev/null || true
+}
+trap 'record_failure "line $LINENO: $BASH_COMMAND"' ERR
 
 log "Installer revision $INSTALLER_REV (app $VERSION)"
 
@@ -1465,6 +1480,14 @@ T_BOOTTIME="$(awk -v now="$(date +%s)" '{print now - int($1)}' /proc/uptime 2>/d
 # last finished outage as seen by irl-netwatch ("<start> <end>", rev >= 29)
 T_OFF_START=""; T_OFF_END=""
 [ -r "$STATE_DIR/last-offline" ] && { read -r T_OFF_START T_OFF_END < "$STATE_DIR/last-offline" || true; }
+# update outcome (rev >= 32): when the last reinstall succeeded, and the last
+# failure the installer / updater recorded (cleared by the next success)
+T_UPD_OK="$(cat "$STATE_DIR/last-update-ok" 2>/dev/null)" || true
+T_UPD_ERR_AT=""; T_UPD_ERR=""
+if [ -r "$STATE_DIR/last-update-error" ]; then
+  T_UPD_ERR_AT="$(awk 'NR==1{print $1}' "$STATE_DIR/last-update-error" 2>/dev/null)" || true
+  T_UPD_ERR="$(head -1 "$STATE_DIR/last-update-error" 2>/dev/null | cut -d' ' -f2- | head -c 500)" || true
+fi
 # panel commands executed since the last delivered post (see the end of this script)
 T_ACKS="$(grep -Ex '[A-Za-z0-9_.:-]{1,64}' "$STATE_DIR/command-acks" 2>/dev/null | tr '\n' ' ')" || true
 T_CPUTEMP="$(awk '{printf "%.1f", $1/1000}' /sys/class/thermal/thermal_zone0/temp 2>/dev/null)" || true
@@ -1581,7 +1604,7 @@ if [ -n "${T_DEVICE_ID:-}" ] && [ -r "$PLAYER_ENV" ]; then
 fi
 
 export T_SERIAL T_HOSTNAME T_MODEL T_OS T_REV T_APP T_CANARY T_UPTIME \
-       T_BOOTTIME T_OFF_START T_OFF_END T_ACKS \
+       T_BOOTTIME T_OFF_START T_OFF_END T_ACKS T_UPD_OK T_UPD_ERR_AT T_UPD_ERR \
        T_CPUTEMP T_THROTTLED T_DISKFREE T_DISKPCT T_MEMFREE \
        T_SSID T_SIGNAL T_KIOSK T_GATEWAY T_IP \
        T_DEVICE_ID T_SCREEN T_DEVICE_TOKEN T_DISPLAYS
@@ -1631,6 +1654,9 @@ print(json.dumps({
     "last_offline_start": num(e("T_OFF_START"), int),
     "last_offline_end": num(e("T_OFF_END"), int),
     "acked_commands": (e("T_ACKS") or "").split(),
+    "last_update_ok_at": num(e("T_UPD_OK"), int),
+    "last_update_error_at": num(e("T_UPD_ERR_AT"), int),
+    "last_update_error": e("T_UPD_ERR") or None,
     "cpu_temp_c": num(e("T_CPUTEMP"), float),
     "throttled_flags": throttled(e("T_THROTTLED")),
     "disk_free_mb": num(e("T_DISKFREE"), int),
@@ -1917,12 +1943,27 @@ main() {
   fi
 
   echo "install.sh changed (${OLD:-none} -> $NEW) — reinstalling"
+  # this attempt supersedes any earlier failure record (a success clears it,
+  # a failure writes a fresh one below)
+  ERR_F=/var/lib/irl-player/last-update-error
+  rm -f "$ERR_F"
   if bash "$TMP"; then
     echo "$NEW" > "$STATE"
     rm -f "$PENDING"
     echo "update applied"
+    # tell the panel about the new revision now rather than at the next 5-min tick
+    systemctl start --no-block irl-player-telemetry.service 2>/dev/null || true
   else
+    rc=$?
+    # The installer's own ERR trap normally records the failing line. Cover
+    # the cases where it never got the chance (syntax error, killed early).
+    if [ ! -f "$ERR_F" ]; then
+      mkdir -p "$(dirname "$ERR_F")"
+      echo "$(date +%s) rev ? reinstall exited $rc" > "$ERR_F"
+    fi
     echo "reinstall failed — will retry next cycle" >&2
+    # push the failure to the panel right away (fire-and-forget)
+    systemctl start --no-block irl-player-telemetry.service 2>/dev/null || true
     exit 1
   fi
 }
@@ -2049,6 +2090,11 @@ systemctl enable --now irl-player-reboot.timer >/dev/null 2>&1 || true
 
 log "Starting kiosk ..."
 systemctl restart "$SERVICE_NAME"
+
+# this run made it to the end: stamp it and clear any earlier failure
+mkdir -p "$UPDATE_STATE_DIR"
+date +%s > "$UPDATE_STATE_DIR/last-update-ok"
+rm -f "$UPDATE_STATE_DIR/last-update-error"
 
 log "Done. IRL Player will start fullscreen on every boot."
 log "Auto-update: checks $BASE_URL/install.sh hourly and reinstalls on change"

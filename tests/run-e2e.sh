@@ -209,6 +209,11 @@ check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; p=json.load(sys.std
 check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; d=json.load(sys.stdin); ds=d[\"displays\"]; assert len(ds)==1, ds; x=ds[0]; assert x[\"connector\"]==\"HDMI-A-1\" and x[\"width\"]==1024 and x[\"height\"]==600 and x[\"refresh_hz\"] is None, x; assert x[\"native_width\"]==1024 and x[\"native_height\"]==600, x; assert d[\"screen_resolution\"]==\"1024x600\", d[\"screen_resolution\"]'" "telemetry reports the connected display with its native mode (kiosk down)"
 check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; x=json.load(sys.stdin)[\"displays\"][0]; assert x[\"make\"]==\"DWE\" and x[\"model\"]==\"E2E-PANEL\", x; assert x[\"physical_mm\"]==[470,260] and x[\"diagonal_in\"]==21.1, x'" "telemetry decodes the EDID make, model name and physical size"
 check "grep -q 'apt-get install -y -qq wlr-randr' '$SITE/install.sh'" "installer installs wlr-randr (screen switch + current display mode)"
+# rev 32: a completed run stamps last-update-ok (reported as last_update_ok_at)
+# and leaves no failure record
+check "[ -s '$ROOT/var/lib/irl-player/last-update-ok' ] && [ ! -e '$ROOT/var/lib/irl-player/last-update-error' ]" "completed install stamps last-update-ok and leaves no failure record"
+check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys,time; d=json.load(sys.stdin); assert isinstance(d[\"last_update_ok_at\"],int) and abs(time.time()-d[\"last_update_ok_at\"])<600, d; assert d[\"last_update_error\"] is None and d[\"last_update_error_at\"] is None, d'" "telemetry reports last_update_ok_at and no update error"
+check "grep -q '^die() {.*record_failure .*; exit 1; }' '$SITE/install.sh'" "die() records its message for the panel"
 # rev 29 fields: boot_time (now - uptime), the last outage window recorded by
 # netwatch (null until one happened), and the always-present ack list
 check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys,time; d=json.load(sys.stdin); b=d[\"boot_time\"]; assert isinstance(b,int) and abs(time.time()-b-d[\"uptime_s\"])<120, (b, d[\"uptime_s\"])'" "telemetry reports boot_time consistent with uptime_s"
@@ -398,6 +403,37 @@ check "grep -q 'update applied' '$E2E/canary.log'" "canary device applies with n
 check "! grep -q 'applies it in' '$E2E/canary.log'" "no wait message on canary"
 # two full reinstalls have run since section 2b wrote the gateway's CA state
 check "grep -q 'E2E-FAKE-INLINE-CA' '$ROOT/opt/irl-gateway/config-ca.pem'" "reinstalls leave config-ca.pem alone (like mqtt.json)"
+
+echo "== 7b. Failed reinstall is recorded and reported to the panel =="
+# apt is the first thing a reinstall touches: make it fail, publish a changed
+# script, and the updater must leave the stored hash alone, record the failing
+# line for telemetry, and kick an immediate telemetry post
+H_BEFORE=$(cat "$ROOT/etc/irl-player/installer.sha256")
+printf '#!/bin/sh\nexit 1\n' > "$ROOT/bin/apt-get"
+printf '# failing-reinstall marker\n' >> "$SITE/install.sh"
+: > "$ROOT/systemctl.log"
+"$ROOT/usr/local/bin/irl-update" > "$E2E/fail.log" 2>&1; rc=$?
+check "[ $rc -eq 1 ] && grep -q 'reinstall failed' '$E2E/fail.log'" "failed reinstall: updater exits 1 and says so"
+check "[ \"\$(cat '$ROOT/etc/irl-player/installer.sha256')\" = '$H_BEFORE' ]" "failed reinstall: stored hash not advanced (retries next cycle)"
+check "grep -Eq '^[0-9]+ rev [0-9]+ line [0-9]+: apt-get update' '$ROOT/var/lib/irl-player/last-update-error'" "installer's ERR trap recorded the failing line (apt-get update)"
+check "grep -q 'start --no-block irl-player-telemetry.service' '$ROOT/systemctl.log'" "failure triggers an immediate telemetry post"
+TOUTF=$("$ROOT/usr/local/bin/irl-telemetry" --print 2>/dev/null || true)
+check "printf '%s' \"\$TOUTF\" | python3 -c 'import json,sys,time; d=json.load(sys.stdin); e=d[\"last_update_error\"]; assert e and \"apt-get update\" in e and e.startswith(\"rev \"), e; assert isinstance(d[\"last_update_error_at\"],int) and abs(time.time()-d[\"last_update_error_at\"])<600, d; assert isinstance(d[\"last_update_ok_at\"],int), d'" "telemetry reports last_update_error (+ timestamp) while keeping last_update_ok_at"
+# a script bash cannot even parse never reaches the ERR trap: the updater
+# records a generic entry itself
+mv "$SITE/install.sh" "$SITE/install.sh.good"
+printf '#!/bin/bash\nFLEET_DELAY_HOURS=0\nif\n' > "$SITE/install.sh"
+"$ROOT/usr/local/bin/irl-update" > /dev/null 2>&1; rc=$?
+check "[ $rc -eq 1 ] && grep -q 'reinstall exited 2' '$ROOT/var/lib/irl-player/last-update-error'" "unparseable script: updater records a generic failure itself"
+mv "$SITE/install.sh.good" "$SITE/install.sh"
+# apt back to normal: the next cycle applies the update and clears the failure
+printf '#!/bin/sh\nexit 0\n' > "$ROOT/bin/apt-get"
+"$ROOT/usr/local/bin/irl-update" > "$E2E/recover.log" 2>&1
+check "grep -q 'update applied' '$E2E/recover.log'" "next cycle after the failure: update applied"
+check "[ ! -e '$ROOT/var/lib/irl-player/last-update-error' ] && [ -s '$ROOT/var/lib/irl-player/last-update-ok' ]" "successful run clears the failure record and stamps last-update-ok"
+TOUTR=$("$ROOT/usr/local/bin/irl-telemetry" --print 2>/dev/null || true)
+check "printf '%s' \"\$TOUTR\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"last_update_error\"] is None and d[\"last_update_error_at\"] is None, d'" "telemetry: update error gone after the recovery"
+check "grep -c 'start --no-block irl-player-telemetry.service' '$ROOT/systemctl.log' | grep -q '^3$'" "each reinstall outcome (2 failures + 1 success) pushed a telemetry post"
 
 echo "== 8. Concurrency: second updater can't run while one holds the lock =="
 ( exec 9>"$ROOT/var/lock/irl-update.lock"; flock 9; "$ROOT/usr/local/bin/irl-update"; echo "rc=$?" > "$E2E/lock.rc" )
