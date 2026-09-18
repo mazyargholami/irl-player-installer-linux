@@ -145,9 +145,13 @@ would not enable. Each such failure is logged *and* recorded as a line in
 `/var/lib/irl-player/last-update-warnings`, which the device sends as
 `last_update_warnings` (a list, `[]` after a clean run). The update still
 counts as applied, so the panel can show the device as degraded rather than
-green or red. And if a reinstall never returns at all (a reboot or power
-loss mid-run), the updater notices its own leftover marker on the next
-hourly check and records `rev ? reinstall interrupted` as the update error.
+green or red. Only steps whose failure actually costs something are
+warnings: the `xcursor-transparent-theme` package no longer exists on
+current Raspberry Pi OS, so its absence is a plain log line (rev 36) —
+unclutter hides the cursor on its own. And if a reinstall never returns at
+all (a reboot or power loss mid-run), the updater notices its own leftover
+marker on the next hourly check and records `rev ? reinstall interrupted`
+as the update error.
 
 ```bash
 sudo systemctl list-timers irl-player-update.timer   # when is the next check?
@@ -412,7 +416,8 @@ device originally booted to a desktop, re-enable it with
   through ALSA directly. On a Pi, pick the output via `sudo raspi-config` →
   System Options → Audio.
 - **Mouse cursor or app title bar visible** — fixed by re-running the
-  installer: the cursor is hidden with a transparent cursor theme, and the
-  app runs on the X11 backend where it draws no title bar.
+  installer: the cursor is hidden by unclutter (plus a transparent cursor
+  theme where the OS still ships one), and the app runs on the X11 backend
+  where it draws no title bar.
 - **Locked out with no keyboard** — SSH in and
   `sudo systemctl stop irl-player-kiosk`, or power-cycle; it recovers cleanly.
