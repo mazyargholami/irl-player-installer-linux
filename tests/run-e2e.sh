@@ -198,7 +198,10 @@ for i, pkg in zip(ids, pkgs):
 PYCHK" "every platform has its own player package, in its own packages/<id>/ folder, for the current VERSION"
 
 echo "== 1. Fresh install (curl | bash, like a real device) =="
-curl -fsSL "http://localhost:$PORT/install.sh" | bash > "$E2E/install1.log" 2>&1
+# Run from a neutral directory: with curl | bash the installer has no script
+# path and looks for a local packages/ copy in the cwd, which exists when the
+# suite runs from the repo root (CI does) - a device downloads instead.
+(cd "$E2E" && curl -fsSL "http://localhost:$PORT/install.sh" | bash) > "$E2E/install1.log" 2>&1
 check "[ \$? -eq 0 ] || grep -q Done '$E2E/install1.log'" "install.sh runs end-to-end without error"
 check "grep -q 'Downloading http://localhost:$PORT/packages/rpi-arm64/irl-player_.*_arm64.deb' '$E2E/install1.log'" "player package downloaded from its platform folder"
 REV="$(sed -n 's/^INSTALLER_REV=\([0-9]*\)$/\1/p' "$REPO/install.sh")"
