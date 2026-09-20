@@ -39,6 +39,7 @@ rm -f "/etc/systemd/system/$SERVICE_NAME.service" \
       /usr/local/bin/irl-update \
       /usr/local/bin/irl-watchdog \
       /usr/local/bin/irl-netwatch \
+      /usr/local/bin/irl-device-serial \
       /usr/local/bin/irl-gateway-config \
       /usr/local/bin/irl-telemetry \
       /etc/systemd/system/irl-player-telemetry.service \

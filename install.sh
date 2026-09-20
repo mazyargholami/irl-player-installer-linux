@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# IRL Player kiosk installer for Raspberry Pi (arm64)
+# IRL Player kiosk installer for Linux devices (see SUPPORTED_PLATFORMS below)
 #
 # One-line remote install (run on the Pi):
 #   curl -fsSL https://linux-player.theirlnetwork.com/install.sh | sudo bash
@@ -10,7 +10,8 @@
 # to use another server).
 #
 # What it does:
-#   1. Verifies the machine is a Raspberry Pi running a 64-bit (arm64) OS
+#   1. Detects the platform (hardware + OS) and refuses anything not in
+#      SUPPORTED_PLATFORMS, printing what it saw and what is supported
 #   2. Downloads and installs the irl-player .deb (with dependencies)
 #   3. Installs cage (Wayland kiosk compositor) so the app runs fullscreen,
 #      alone on the screen, on the top layer — nothing can appear over it
@@ -40,9 +41,20 @@ BASE_URL="${IRL_BASE_URL:-https://linux-player.theirlnetwork.com}"
 CURL_HTTPS_ONLY=""
 case "$BASE_URL" in https://*) CURL_HTTPS_ONLY="--proto =https --tlsv1.2";; esac
 VERSION="1.2.8"
-# Architectures with a build in packages/ — add e.g. "amd64" here once
-# packages/irl-player_<version>_amd64.deb exists.
-SUPPORTED_ARCHS="arm64"
+# Supported platforms (rev >= 37). One line per platform, fields separated
+# by "|":  <id> | <dpkg arch> | <package file> | <devices> | <operating system>
+# The website reads this block verbatim to list supported devices and to
+# check every platform's package exists, so keep the format: the opening
+# line exactly `SUPPORTED_PLATFORMS="`, one platform per line, closing `"`.
+# Every platform ships its own player package (<version> is VERSION above);
+# two platforms must never share one. detect_platform() below maps the
+# running device to an id; anything it cannot map is refused before the
+# system is touched. Adding a platform = the .deb in packages/, one line
+# here, one case in detect_platform(), and any platform_<id>_* hooks it
+# needs (see "platform hooks" below) - nothing else.
+SUPPORTED_PLATFORMS="
+rpi-arm64|arm64|irl-player_<version>_arm64.deb|Raspberry Pi CM5, Pi 5, 4, 3, Zero 2 W|Raspberry Pi OS 64-bit (Lite or Desktop)
+"
 APP_BIN="/opt/irl-player/IRLPlayer"
 KIOSK_USER="irlplayer"
 SERVICE_NAME="irl-player-kiosk"
@@ -78,6 +90,7 @@ MANAGED_FILES="
 /etc/systemd/system/irl-gateway.service
 /opt/irl-gateway/gateway.py
 /opt/irl-gateway/broker-ca.pem
+/usr/local/bin/irl-device-serial
 /usr/local/bin/irl-gateway-config
 /usr/local/bin/irl-telemetry
 /etc/systemd/system/irl-player-telemetry.service
@@ -91,7 +104,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=36
+INSTALLER_REV=37
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; record_failure "$*"; exit 1; }
@@ -141,33 +154,120 @@ install_script() {  # usage: install_script /path/to/script <<'EOF' ... EOF
   mv -f "$tmp" "$1"
 }
 
+# ----------------------- platform layer (rev >= 37) -----------------------
+# Everything that depends on WHAT the installer is running on lives here:
+# the detector that maps the device to a SUPPORTED_PLATFORMS id, and the
+# per-platform hooks. The rest of the script is platform-neutral and calls
+# `run_hook <step>` wherever a step differs between platforms.
+
+# Sets PLATFORM (an id from SUPPORTED_PLATFORMS, or empty) and DETECTED (a
+# one-line description of what was seen, printed on refusal so a customer can
+# paste it). First matching case wins; add new platforms as new cases.
+detect_platform() {
+  local os_id="" os_name=""
+  DETECTED_ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
+  DETECTED_MODEL="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || true)"
+  [ -n "$DETECTED_MODEL" ] || DETECTED_MODEL="$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)"
+  # shellcheck disable=SC1091
+  eval "$(. /etc/os-release 2>/dev/null && printf 'os_id=%q os_name=%q' "${ID:-}" "${PRETTY_NAME:-}")" || true
+  DETECTED="arch=$DETECTED_ARCH model=${DETECTED_MODEL:-unknown} os=${os_name:-unknown}"
+  PLATFORM=""
+  case "$DETECTED_ARCH/$os_id/$DETECTED_MODEL" in
+    arm64/*/*"Raspberry Pi"*) PLATFORM="rpi-arm64" ;;
+    # amd64/ubuntu/*)          PLATFORM="x86-ubuntu" ;;   # example of a future line
+  esac
+}
+
+# Field <n> (1-based, see the SUPPORTED_PLATFORMS comment) of a platform's
+# registry line, e.g. `platform_field rpi-arm64 3` -> its package file.
+platform_field() {
+  printf '%s\n' "$SUPPORTED_PLATFORMS" | awk -F'|' -v id="$1" -v n="$2" '$1==id{print $n; exit}'
+}
+
+# Not a supported platform: say exactly what was seen and what is supported,
+# then stop before anything is installed or written. On a device that was
+# already installed (state dir exists) the refusal is recorded like any other
+# failure so the panel shows it; a fresh unsupported machine is left untouched.
+refuse_platform() {
+  local hint=""
+  [ "$DETECTED_ARCH" = "armhf" ] && hint="Hint: this is a 32-bit OS - reinstall the 64-bit image."
+  {
+    printf '\033[1;31m[irl-player] ERROR:\033[0m This device is not supported by IRL Player.\n'
+    printf '  Detected: %s\n' "$DETECTED"
+    printf '  Supported platforms:\n'
+    printf '%s\n' "$SUPPORTED_PLATFORMS" | grep . | while IFS='|' read -r id _ _ devices os; do
+      printf '    %s: %s - %s\n' "$id" "$devices" "$os"
+    done
+    [ -n "$hint" ] && printf '  %s\n' "$hint"
+    printf '  See %s for details.\n' "$BASE_URL"
+  } >&2
+  [ -d "$UPDATE_STATE_DIR" ] && record_failure "unsupported platform ($DETECTED)"
+  exit 1
+}
+
+# Platform hooks: a step that differs per platform is a function named
+# platform_<id>_<step> (with "-" in the id written as "_"). `run_hook <step>`
+# calls the detected platform's function, else platform_default_<step> if
+# one exists, else nothing. A new platform overrides only what it needs.
+run_hook() {
+  local fn="platform_${PLATFORM//-/_}_$1"
+  if declare -F "$fn" >/dev/null; then "$fn"
+  elif declare -F "platform_default_$1" >/dev/null; then "platform_default_$1"
+  fi
+}
+
+# console_blanking: keep the text console from blanking the screen (the
+# kiosk owns the display, but a blanked tty1 underneath is what the player
+# inherits on a Pi). Pi boot config lives in cmdline.txt; other platforms
+# have no hook yet (GRUB-based ones would edit /etc/default/grub).
+platform_rpi_arm64_console_blanking() {
+  local f cmdline=""
+  for f in /boot/firmware/cmdline.txt /boot/cmdline.txt; do
+    [ -f "$f" ] && cmdline="$f" && break
+  done
+  if [ -n "$cmdline" ] && ! grep -q 'consoleblank=' "$cmdline"; then
+    sed -i '1s/$/ consoleblank=0/' "$cmdline"
+    log "Disabled console blanking in $cmdline"
+  fi
+}
+
+# apt_origins: the unattended-upgrades Origins-Pattern lines (security
+# updates only) for the platform's distribution. Printed, one per line,
+# already quoted for the apt config file.
+platform_default_apt_origins() {
+  printf '        "origin=Debian,codename=${distro_codename},label=Debian-Security";\n'
+}
+platform_rpi_arm64_apt_origins() {
+  platform_default_apt_origins
+  printf '        "origin=Raspbian,codename=${distro_codename}";\n'
+  printf '        "origin=Raspberry Pi Foundation,codename=${distro_codename}";\n'
+}
+
+# hardware_watchdog: arm a hardware watchdog through systemd so a full-OS
+# hang still ends in a reboot. The default fits every board with a watchdog
+# driver (the Pi's chip, iTCO on Intel); a platform without one can override
+# this to load softdog first, or to do nothing.
+platform_default_hardware_watchdog() {
+  mkdir -p /etc/systemd/system.conf.d
+  cat > /etc/systemd/system.conf.d/irl-watchdog.conf <<'EOF'
+[Manager]
+RuntimeWatchdogSec=15
+RebootWatchdogSec=2min
+EOF
+  systemctl daemon-reexec 2>/dev/null || true
+}
+# ---------------------------------------------------------------------------
+
 log "Installer revision $INSTALLER_REV (app $VERSION)"
 
 [ "$(id -u)" -eq 0 ] || die "must run as root — use: curl -fsSL $BASE_URL/install.sh | sudo bash"
 
-# --- 1. Device + architecture detection --------------------------------------
+# --- 1. Platform detection ----------------------------------------------------
 command -v dpkg >/dev/null 2>&1 || die "this is not a Debian-based system (dpkg not found)"
-ARCH="$(dpkg --print-architecture)"
-case " $SUPPORTED_ARCHS " in
-  *" $ARCH "*) ;;
-  *)
-    [ "$ARCH" = "armhf" ] && die "32-bit OS detected. irl-player needs a 64-bit OS — reinstall Raspberry Pi OS 64-bit."
-    die "no irl-player build for architecture '$ARCH' (available: $SUPPORTED_ARCHS)"
-    ;;
-esac
-
-if [ "$ARCH" = "arm64" ]; then
-  # arm64 builds target the Raspberry Pi — refuse other boards
-  MODEL="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || true)"
-  case "$MODEL" in
-    *"Raspberry Pi"*) log "Detected: $MODEL ($ARCH)" ;;
-    *) die "this does not look like a Raspberry Pi (model: '${MODEL:-unknown}')" ;;
-  esac
-else
-  log "Detected architecture: $ARCH"
-fi
-
-DEB_NAME="irl-player_${VERSION}_${ARCH}.deb"
+detect_platform
+[ -n "$PLATFORM" ] || refuse_platform
+DEB_NAME="$(platform_field "$PLATFORM" 3 | sed "s|<version>|$VERSION|")"
+log "Detected: $DETECTED -> platform $PLATFORM"
 
 # --- 2. Install dependencies ------------------------------------------------
 log "Installing packages (cage kiosk compositor + deps)..."
@@ -220,14 +320,7 @@ for dm in lightdm gdm3 sddm greetd; do
 done
 
 # --- 6. Disable console blanking so the screen never turns off ---------------
-CMDLINE=""
-for f in /boot/firmware/cmdline.txt /boot/cmdline.txt; do
-  [ -f "$f" ] && CMDLINE="$f" && break
-done
-if [ -n "$CMDLINE" ] && ! grep -q 'consoleblank=' "$CMDLINE"; then
-  sed -i '1s/$/ consoleblank=0/' "$CMDLINE"
-  log "Disabled console blanking in $CMDLINE"
-fi
+run_hook console_blanking
 
 # --- 7. systemd kiosk service -------------------------------------------------
 # Invisible mouse cursor: expose the transparent theme as the "default"
@@ -538,16 +631,10 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
-# Hardware watchdog: the Pi's watchdog chip force-reboots the device if the
-# whole OS freezes (the case no software watchdog can catch). systemd pets
-# the chip; if systemd itself stops responding for 15s, the chip fires.
-mkdir -p /etc/systemd/system.conf.d
-cat > /etc/systemd/system.conf.d/irl-watchdog.conf <<'EOF'
-[Manager]
-RuntimeWatchdogSec=15
-RebootWatchdogSec=2min
-EOF
-systemctl daemon-reexec 2>/dev/null || true
+# Hardware watchdog: the board's watchdog chip force-reboots the device if
+# the whole OS freezes (the case no software watchdog can catch). systemd
+# pets the chip; if systemd itself stops responding for 15s, the chip fires.
+run_hook hardware_watchdog
 
 # --- 10. Unattended OS security updates ---------------------------------------
 # The player updates itself via irl-update; this keeps the OS underneath
@@ -559,12 +646,11 @@ log "Enabling unattended OS security updates ..."
 apt-get install -y -qq unattended-upgrades || warn "unattended-upgrades unavailable; no automatic OS security updates"
 mkdir -p /etc/apt/apt.conf.d
 
-cat > /etc/apt/apt.conf.d/52irl-unattended-upgrades <<'EOF'
+APT_ORIGINS="$(run_hook apt_origins)"
+cat > /etc/apt/apt.conf.d/52irl-unattended-upgrades <<EOF
 // Installed by the irl-player installer — OS security updates only.
 Unattended-Upgrade::Origins-Pattern {
-        "origin=Debian,codename=${distro_codename},label=Debian-Security";
-        "origin=Raspbian,codename=${distro_codename}";
-        "origin=Raspberry Pi Foundation,codename=${distro_codename}";
+$APT_ORIGINS
 };
 // the player app is managed exclusively by irl-update, never by apt upgrades
 Unattended-Upgrade::Package-Blacklist { "irl-player"; };
@@ -1420,13 +1506,29 @@ GATEWAY_CA_EOF
 # Unknown devices auto-register as "pending" in the panel; approve them
 # there. Rotation = edit the config in the panel (devices refresh within a
 # day via RuntimeMaxSec, or instantly on systemctl restart irl-gateway).
+# Device identity (rev >= 37): ONE helper resolves the serial that keys this
+# device everywhere (panel approval, telemetry, HMAC secret, gateway config).
+# Both fetchers call it instead of reading /proc/cpuinfo themselves, so a
+# platform without a Pi serial (DMI, machine-id, ...) is a change in one
+# place - agreed with the panel first, since the panel keys on this value.
+# Prints the serial; prints nothing and exits 1 when the platform has none.
+install_script /usr/local/bin/irl-device-serial <<'SERIAL_EOF'
+#!/usr/bin/env bash
+# Prints this device's fleet serial (empty + exit 1 if unknown).
+# Raspberry Pi: the Serial line of /proc/cpuinfo (burned into the SoC).
+set -u
+serial="$(awk '/^Serial/{print $3}' /proc/cpuinfo 2>/dev/null)" || true
+[ -n "$serial" ] || exit 1
+printf '%s\n' "$serial"
+SERIAL_EOF
+
 install_script /usr/local/bin/irl-gateway-config <<'GWCONF_EOF'
 #!/usr/bin/env bash
 # Fetches the fleet MQTT config for the IRL gateway from the config service.
 set -u
 OUT=/opt/irl-gateway/mqtt.json
 URL="https://iot-config.theirlnetwork.com/mqtt-config"
-SERIAL="$(awk '/^Serial/{print $3}' /proc/cpuinfo 2>/dev/null || true)"
+SERIAL="$(/usr/local/bin/irl-device-serial 2>/dev/null || true)"
 HTTPS_ONLY=""
 case "$URL" in https://*) HTTPS_ONLY="--proto =https --tlsv1.2";; esac
 umask 077
@@ -1504,8 +1606,9 @@ set -u
 URL="https://iot-config.theirlnetwork.com/telemetry"
 STATE_DIR=/var/lib/irl-player
 
-T_SERIAL="$(awk '/^Serial/{print $3}' /proc/cpuinfo 2>/dev/null)" || true
+T_SERIAL="$(/usr/local/bin/irl-device-serial 2>/dev/null)" || true
 [ -n "${T_SERIAL:-}" ] || exit 0
+T_PLATFORM="@PLATFORM@"
 T_HOSTNAME="$(hostname 2>/dev/null)" || true
 T_MODEL="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null)" || true
 T_OS="$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME")" || true
@@ -1641,7 +1744,7 @@ if [ -n "${T_DEVICE_ID:-}" ] && [ -r "$PLAYER_ENV" ]; then
   fi
 fi
 
-export T_SERIAL T_HOSTNAME T_MODEL T_OS T_REV T_APP T_CANARY T_UPTIME \
+export T_SERIAL T_HOSTNAME T_MODEL T_OS T_PLATFORM T_REV T_APP T_CANARY T_UPTIME \
        T_BOOTTIME T_OFF_START T_OFF_END T_ACKS T_UPD_OK T_UPD_ERR_AT T_UPD_ERR \
        T_UPD_WARN_FILE \
        T_CPUTEMP T_THROTTLED T_DISKFREE T_DISKPCT T_MEMFREE \
@@ -1694,6 +1797,7 @@ print(json.dumps({
     "hostname": e("T_HOSTNAME") or None,
     "model": e("T_MODEL") or None,
     "os": e("T_OS") or None,
+    "platform": e("T_PLATFORM") or None,
     "installer_rev": num(e("T_REV"), int),
     "app_version": e("T_APP") or None,
     "canary": e("T_CANARY") == "true",
@@ -1817,7 +1921,7 @@ if [ -n "$REBOOT" ]; then
 fi
 exit 0
 TELEMETRY_EOF
-sed -i "s|@INSTALLER_REV@|$INSTALLER_REV|" /usr/local/bin/irl-telemetry
+sed -i -e "s|@INSTALLER_REV@|$INSTALLER_REV|" -e "s|@PLATFORM@|$PLATFORM|" /usr/local/bin/irl-telemetry
 
 cat > /etc/systemd/system/irl-player-telemetry.service <<'EOF'
 [Unit]
@@ -2170,7 +2274,7 @@ mkdir -p "$UPDATE_STATE_DIR"
 date +%s > "$UPDATE_STATE_DIR/last-update-ok"
 rm -f "$UPDATE_STATE_DIR/last-update-error"
 
-log "Done. IRL Player will start fullscreen on every boot."
+log "Done. IRL Player will start fullscreen on every boot (platform $PLATFORM)."
 log "Auto-update: checks $BASE_URL/install.sh hourly and reinstalls on change"
 log "Watchdog: frozen screen -> player restart, then reboot; OS hang -> hardware reboot"
 log "Reboot:  scheduled weekly (Sun 04:00 local) so OS updates apply and timers stay healthy"

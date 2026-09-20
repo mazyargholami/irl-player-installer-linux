@@ -358,9 +358,11 @@
     <div class="stand"></div>
   </div>
 
-  <div class="pills">
-    <span class="pill ok">CM5 · Raspberry Pi 5 · also 3 / 4 / Zero 2 W</span>
-    <span class="pill ok">Raspberry Pi OS 64-bit</span>
+  <!-- Supported platforms: rebuilt live from install.sh's SUPPORTED_PLATFORMS
+       block by the script at the bottom, so this list can never disagree with
+       what the installer accepts. The static pills are the offline fallback. -->
+  <div class="pills" id="platform-pills">
+    <span class="pill ok">Raspberry Pi CM5, Pi 5, 4, 3, Zero 2 W · Raspberry Pi OS 64-bit (Lite or Desktop)</span>
     <span class="pill soon">More Linux devices coming soon</span>
   </div>
 
@@ -675,7 +677,7 @@
     <summary>
       <span>
         <h2>If something looks wrong</h2>
-        <p class="sub">The three things people actually run into, and the fix for each.</p>
+        <p class="sub">The things people actually run into, and the fix for each.</p>
       </span>
       <svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke-width="2.4" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
     </summary>
@@ -712,6 +714,19 @@
           Wi-Fi there) and run the install command again.</div>
         </div>
       </div>
+      <div class="fixrow">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke-width="2.2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><circle cx="12" cy="16" r="0.6"/></svg>
+        <div>
+          <div class="q">The install command says "This device is not supported"</div>
+          <div class="a">The installer checks the device and system before it changes
+          anything, and only continues on the platforms listed at the top of this page.
+          It prints a <strong>Detected:</strong> line saying what it found. The usual
+          cause is the 32-bit system on a Raspberry Pi: re-flash with the
+          <strong>64-bit</strong> image and run the command again. Anything else, send us
+          the whole message including the Detected line, and nothing on the device was
+          touched.</div>
+        </div>
+      </div>
     </div>
     </div>
     </details>
@@ -746,7 +761,7 @@
     <span>IRL Player for Linux · IRL Network</span>
     <!-- filled in live from install.sh by the script below; this text is the
          fallback if the fetch fails (e.g. viewing the file offline) -->
-    <span id="footer-versions">Guide version 21</span>
+    <span id="footer-versions">Guide version 22</span>
   </footer>
 </div>
 
@@ -766,28 +781,50 @@
     });
   });
 
-  // Footer versions, read live from the published installer so they can
-  // never go stale: INSTALLER_REV and VERSION come straight out of
-  // install.sh, and the app version is then verified against the actual
-  // .deb hosted in packages/ (a HEAD request checks the file exists).
+  // Footer versions and the supported-platform pills, read live from the
+  // published installer so they can never go stale: INSTALLER_REV, VERSION
+  // and the SUPPORTED_PLATFORMS block (one "id|arch|package|devices|os" line
+  // per platform) come straight out of install.sh, and every platform's
+  // player package is then verified to exist in packages/ (HEAD request).
   (function () {
     var el = document.getElementById('footer-versions');
+    var pills = document.getElementById('platform-pills');
     fetch('install.sh', { cache: 'no-store' })
       .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
       .then(function (text) {
         var rev = (text.match(/^INSTALLER_REV=(\d+)/m) || [])[1];
         var ver = (text.match(/^VERSION="([^"]+)"/m) || [])[1];
+        var block = (text.match(/^SUPPORTED_PLATFORMS="\n([\s\S]*?)\n"/m) || [])[1] || '';
+        var platforms = block.split('\n').filter(function (l) { return l.trim(); })
+          .map(function (l) { var f = l.split('|'); return { id: f[0], arch: f[1], pkg: f[2], devices: f[3], os: f[4] }; })
+          .filter(function (p) { return p.id && p.pkg && p.devices; });
+        if (platforms.length && pills) {
+          pills.textContent = '';
+          platforms.forEach(function (p) {
+            var span = document.createElement('span');
+            span.className = 'pill ok';
+            span.textContent = p.devices + (p.os ? ' · ' + p.os : '');
+            pills.appendChild(span);
+          });
+          var soon = document.createElement('span');
+          soon.className = 'pill soon';
+          soon.textContent = 'More Linux devices coming soon';
+          pills.appendChild(soon);
+        }
         if (!rev && !ver) return;
         var parts = [el.textContent];
         if (rev) parts.push('installer revision ' + rev);
         if (ver) parts.push('app ' + ver);
+        if (platforms.length) parts.push(platforms.length + ' platform' + (platforms.length === 1 ? '' : 's'));
         el.textContent = parts.join(' · ');
         if (ver) {
-          fetch('packages/irl-player_' + ver + '_arm64.deb', { method: 'HEAD', cache: 'no-store' })
-            .then(function (r) {
-              if (!r.ok) el.textContent += ' (package missing!)';
-            })
-            .catch(function () { /* offline: leave as-is */ });
+          platforms.forEach(function (p) {
+            fetch('packages/' + p.pkg.replace('<version>', ver), { method: 'HEAD', cache: 'no-store' })
+              .then(function (r) {
+                if (!r.ok) el.textContent += ' (package missing for ' + p.id + '!)';
+              })
+              .catch(function () { /* offline: leave as-is */ });
+          });
         }
       })
       .catch(function () { /* offline: fallback text stays */ });
