@@ -178,7 +178,7 @@ printf 'Raspberry Pi 4 Model B Rev 1.4' > "$ROOT/proc/model"
 curl -fsSL "http://localhost:$PORT/install.sh" | PATH="$E2E/armhf-bin:$PATH" bash > "$E2E/install0b.log" 2>&1; rc=$?
 check "[ $rc -ne 0 ] && grep -q 'Detected: arch=armhf' '$E2E/install0b.log' && grep -q '32-bit OS' '$E2E/install0b.log'" "32-bit OS on a Pi: refused with the reinstall-64-bit hint"
 # registry contract: the block the website parses, one package per platform
-check "grep -q '^SUPPORTED_PLATFORMS=\"$' '$REPO/install.sh' && grep -q '^rpi-arm64|arm64|irl-player_<version>_arm64.deb|' '$REPO/install.sh'" "SUPPORTED_PLATFORMS block keeps the format the website parses"
+check "grep -q '^SUPPORTED_PLATFORMS=\"$' '$REPO/install.sh' && grep -q '^rpi-arm64|arm64|rpi-arm64/irl-player_<version>_arm64.deb|' '$REPO/install.sh'" "SUPPORTED_PLATFORMS block keeps the format the website parses"
 check "python3 - '$REPO' <<'PYCHK'
 import re, sys, os
 repo = sys.argv[1]; src = open(os.path.join(repo, 'install.sh')).read()
@@ -192,13 +192,15 @@ assert len(set(ids)) == len(ids), ids
 assert len(set(pkgs)) == len(pkgs), 'two platforms share a player package: %r' % pkgs
 for i, pkg in zip(ids, pkgs):
     assert '<version>' in pkg, pkg
+    assert pkg.startswith(i + '/'), 'package of %s must live in packages/%s/: %r' % (i, i, pkg)
     path = os.path.join(repo, 'packages', pkg.replace('<version>', ver))
     assert os.path.isfile(path), 'missing player package for %s: %s' % (i, path)
-PYCHK" "every platform in the registry has its own player package for the current VERSION"
+PYCHK" "every platform has its own player package, in its own packages/<id>/ folder, for the current VERSION"
 
 echo "== 1. Fresh install (curl | bash, like a real device) =="
 curl -fsSL "http://localhost:$PORT/install.sh" | bash > "$E2E/install1.log" 2>&1
 check "[ \$? -eq 0 ] || grep -q Done '$E2E/install1.log'" "install.sh runs end-to-end without error"
+check "grep -q 'Downloading http://localhost:$PORT/packages/rpi-arm64/irl-player_.*_arm64.deb' '$E2E/install1.log'" "player package downloaded from its platform folder"
 REV="$(sed -n 's/^INSTALLER_REV=\([0-9]*\)$/\1/p' "$REPO/install.sh")"
 VER="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "$REPO/install.sh")"
 grep -q "Installer revision $REV (app $VER)" "$E2E/install1.log" && ok "logs revision $REV / app $VER" || bad "revision banner missing"
