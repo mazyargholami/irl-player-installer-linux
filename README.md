@@ -21,7 +21,7 @@ platforms, read live from the installer). Currently supported:
 
 | Platform id | Devices | Operating system | Package |
 |---|---|---|---|
-| `rpi-arm64` | Raspberry Pi CM5, Pi 5, 4, 3, Zero 2 W | Raspberry Pi OS 64-bit (Lite or Desktop) | `packages/irl-player_1.2.8_arm64.deb` |
+| `rpi-arm64` | Raspberry Pi CM5, Pi 5, 4, 3, Zero 2 W | Raspberry Pi OS 64-bit (Lite or Desktop) | `packages/rpi-arm64/irl-player_1.2.8_arm64.deb` |
 
 Every platform has its own player package — two platforms never share one.
 The list is the `SUPPORTED_PLATFORMS` block at the top of `install.sh`; see
@@ -33,8 +33,9 @@ The list is the `SUPPORTED_PLATFORMS` block at the top of `install.sh`; see
 ├── index.html                        website: install / uninstall / help guide
 ├── install.sh                        one-line installer (platform-aware)
 ├── uninstall.sh                      one-line uninstaller
-├── packages/                         one .deb per platform & version
-│   └── irl-player_1.2.8_arm64.deb
+├── packages/                         one folder per platform (named after its id)
+│   └── rpi-arm64/
+│       └── irl-player_1.2.8_arm64.deb    one .deb per version
 └── .github/workflows/deploy-pages.yml   auto-deploys the website to GitHub Pages
 ```
 
@@ -47,7 +48,7 @@ The deploy workflow publishes the repo to **GitHub Pages** on every push to
 https://linux-player.theirlnetwork.com/            ← website / guide
 https://linux-player.theirlnetwork.com/install.sh  ← installer
 https://linux-player.theirlnetwork.com/uninstall.sh
-https://linux-player.theirlnetwork.com/packages/…  ← .deb packages
+https://linux-player.theirlnetwork.com/packages/<platform>/…  ← .deb packages
 ```
 
 One-time setup after pushing to GitHub:
@@ -83,8 +84,9 @@ devices installed before the switch are unaffected.
 
 ## Releasing a new version
 
-1. Drop the new package into `packages/` — the file name must be
-   `irl-player_<version>_<arch>.deb`
+1. Drop the new package into its platform's folder, `packages/<platform id>/`
+   — the file name must be `irl-player_<version>_<tag>.deb` (today:
+   `packages/rpi-arm64/irl-player_<version>_arm64.deb`)
 2. In `install.sh`, bump `VERSION="..."` (and `INSTALLER_REV`)
 3. Commit and push
 
@@ -95,7 +97,7 @@ Re-running the one-line installer by hand also still upgrades in place.
 
 The website footer reads `INSTALLER_REV` and `VERSION` live from the
 published `install.sh` (and verifies the matching `.deb` exists in
-`packages/`, showing "package missing!" if it doesn't), so it always shows
+`packages/<platform>/`, showing "package missing!" if it doesn't), so it always shows
 what's actually deployed — nothing to update by hand there.
 
 ## Auto-update
@@ -175,10 +177,10 @@ sudo irl-update                                      # force a check right now
 the top maps the device to an id and holds the per-platform differences;
 everything else is shared. To add one:
 
-1. Build its player package and add it as `packages/irl-player_<version>_<tag>.deb`
-   — a file of its own, never shared with another platform.
+1. Build its player package and add it as `packages/<id>/irl-player_<version>_<tag>.deb`
+   — its own folder and its own file, never shared with another platform.
 2. Add one line to the `SUPPORTED_PLATFORMS` block:
-   `<id>|<dpkg arch>|irl-player_<version>_<tag>.deb|<devices>|<operating system>`.
+   `<id>|<dpkg arch>|<id>/irl-player_<version>_<tag>.deb|<devices>|<operating system>`.
    The website lists the devices and OS from this line and checks the
    package exists, so keep the format.
 3. Add a case to `detect_platform()` that recognises it (arch, OS id and
@@ -194,7 +196,8 @@ everything else is shared. To add one:
    it as a canary, and bump `INSTALLER_REV`.
 
 The e2e suite asserts every registry line has five fields, a unique id, a
-unique package that exists for the current `VERSION`, and that an unknown
+unique package inside `packages/<id>/` that exists for the current `VERSION`,
+and that an unknown
 platform is refused with nothing written.
 
 ## Hosting on your own server instead (optional)

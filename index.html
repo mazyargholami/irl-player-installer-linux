@@ -785,7 +785,7 @@
   // published installer so they can never go stale: INSTALLER_REV, VERSION
   // and the SUPPORTED_PLATFORMS block (one "id|arch|package|devices|os" line
   // per platform) come straight out of install.sh, and every platform's
-  // player package is then verified to exist in packages/ (HEAD request).
+  // player package is then verified to exist under packages/<id>/ (HEAD request).
   (function () {
     var el = document.getElementById('footer-versions');
     var pills = document.getElementById('platform-pills');

@@ -42,18 +42,20 @@ CURL_HTTPS_ONLY=""
 case "$BASE_URL" in https://*) CURL_HTTPS_ONLY="--proto =https --tlsv1.2";; esac
 VERSION="1.2.8"
 # Supported platforms (rev >= 37). One line per platform, fields separated
-# by "|":  <id> | <dpkg arch> | <package file> | <devices> | <operating system>
+# by "|":  <id> | <dpkg arch> | <package path> | <devices> | <operating system>
+# The package path is relative to packages/ - one folder per platform, named
+# after its id (packages/<id>/irl-player_<version>_<tag>.deb, rev >= 38).
 # The website reads this block verbatim to list supported devices and to
 # check every platform's package exists, so keep the format: the opening
 # line exactly `SUPPORTED_PLATFORMS="`, one platform per line, closing `"`.
 # Every platform ships its own player package (<version> is VERSION above);
 # two platforms must never share one. detect_platform() below maps the
 # running device to an id; anything it cannot map is refused before the
-# system is touched. Adding a platform = the .deb in packages/, one line
+# system is touched. Adding a platform = the .deb in packages/<id>/, one line
 # here, one case in detect_platform(), and any platform_<id>_* hooks it
 # needs (see "platform hooks" below) - nothing else.
 SUPPORTED_PLATFORMS="
-rpi-arm64|arm64|irl-player_<version>_arm64.deb|Raspberry Pi CM5, Pi 5, 4, 3, Zero 2 W|Raspberry Pi OS 64-bit (Lite or Desktop)
+rpi-arm64|arm64|rpi-arm64/irl-player_<version>_arm64.deb|Raspberry Pi CM5, Pi 5, 4, 3, Zero 2 W|Raspberry Pi OS 64-bit (Lite or Desktop)
 "
 APP_BIN="/opt/irl-player/IRLPlayer"
 KIOSK_USER="irlplayer"
@@ -104,7 +106,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=37
+INSTALLER_REV=38
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; record_failure "$*"; exit 1; }
@@ -295,7 +297,7 @@ if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/packages/$DEB_NAME" ]; then
   DEB_PATH="$SCRIPT_DIR/packages/$DEB_NAME"
   log "Using local package: $DEB_PATH"
 else
-  DEB_PATH="$(mktemp -d)/$DEB_NAME"
+  DEB_PATH="$(mktemp -d)/$(basename "$DEB_NAME")"
   log "Downloading $BASE_URL/packages/$DEB_NAME ..."
   curl -fSL --retry 3 $CURL_HTTPS_ONLY -o "$DEB_PATH" "$BASE_URL/packages/$DEB_NAME"
 fi
