@@ -13,20 +13,27 @@ crashes, systemd restarts it within 3 seconds.
 curl -fsSL https://linux-player.theirlnetwork.com/install.sh | sudo bash
 ```
 
-The installer detects the device and architecture and picks the right package
-from `packages/`. Currently supported:
+The installer detects the platform (hardware + OS) and picks that platform's
+player package from `packages/`. Anything it cannot map to a supported
+platform is refused **before the system is touched**, with a message that
+says what was detected and what is supported (the website lists the same
+platforms, read live from the installer). Currently supported:
 
-| Architecture | Device | Package |
-|---|---|---|
-| `arm64` | Raspberry Pi CM5 / 5 / 4 / 3 / Zero 2 W (Raspberry Pi OS 64-bit, Lite or Desktop) | `packages/irl-player_1.2.8_arm64.deb` |
+| Platform id | Devices | Operating system | Package |
+|---|---|---|---|
+| `rpi-arm64` | Raspberry Pi CM5, Pi 5, 4, 3, Zero 2 W | Raspberry Pi OS 64-bit (Lite or Desktop) | `packages/irl-player_1.2.8_arm64.deb` |
+
+Every platform has its own player package — two platforms never share one.
+The list is the `SUPPORTED_PLATFORMS` block at the top of `install.sh`; see
+[Adding a platform](#adding-a-platform).
 
 ## Repository layout
 
 ```
 ├── index.html                        website: install / uninstall / help guide
-├── install.sh                        one-line installer (arch-aware)
+├── install.sh                        one-line installer (platform-aware)
 ├── uninstall.sh                      one-line uninstaller
-├── packages/                         one .deb per architecture & version
+├── packages/                         one .deb per platform & version
 │   └── irl-player_1.2.8_arm64.deb
 └── .github/workflows/deploy-pages.yml   auto-deploys the website to GitHub Pages
 ```
@@ -162,13 +169,33 @@ sudo irl-update                                      # force a check right now
 > Devices installed before auto-update existed just need the one-line
 > installer re-run once by hand; from then on they self-update.
 
-### Adding a new architecture (e.g. x86)
+### Adding a platform
 
-1. Add the build, e.g. `packages/irl-player_1.2.8_amd64.deb`
-2. In `install.sh`, extend `SUPPORTED_ARCHS="arm64 amd64"`
-3. Commit and push — the installer picks the right package automatically.
-   (The Raspberry Pi hardware check only applies to `arm64`; other
-   architectures just need a Debian-based 64-bit OS.)
+`install.sh` is one script for every platform (rev 37): a platform layer at
+the top maps the device to an id and holds the per-platform differences;
+everything else is shared. To add one:
+
+1. Build its player package and add it as `packages/irl-player_<version>_<tag>.deb`
+   — a file of its own, never shared with another platform.
+2. Add one line to the `SUPPORTED_PLATFORMS` block:
+   `<id>|<dpkg arch>|irl-player_<version>_<tag>.deb|<devices>|<operating system>`.
+   The website lists the devices and OS from this line and checks the
+   package exists, so keep the format.
+3. Add a case to `detect_platform()` that recognises it (arch, OS id and
+   device model / DMI product name are available).
+4. Override only the hooks it needs, as `platform_<id>_<step>()` functions
+   (with `-` in the id written `_`): `console_blanking`, `apt_origins`,
+   `hardware_watchdog`. A platform with no override gets the default hook
+   (or nothing, for `console_blanking`).
+5. If the platform has no Raspberry Pi serial, extend `irl-device-serial`
+   (the one helper every fetcher uses) — and agree the format with the
+   config panel first, since it keys every device on that value.
+6. Extend the e2e suite with a fixture for the platform, mark one device of
+   it as a canary, and bump `INSTALLER_REV`.
+
+The e2e suite asserts every registry line has five fields, a unique id, a
+unique package that exists for the current `VERSION`, and that an unknown
+platform is refused with nothing written.
 
 ## Hosting on your own server instead (optional)
 
@@ -181,9 +208,12 @@ curl -fsSL https://YOUR_SERVER/irl-player/install.sh | sudo IRL_BASE_URL=https:/
 
 ## How it works
 
-1. **Device detection** — refuses to run on unsupported hardware:
-   architecture must have a build in `packages/`, and `arm64` additionally
-   requires `/proc/device-tree/model` to identify a Raspberry Pi.
+1. **Platform detection** — maps the device (dpkg architecture, device-tree
+   model or DMI product name, OS id) to an id in `SUPPORTED_PLATFORMS`, and
+   refuses anything else before touching the system: it prints a
+   `Detected: arch=… model=… os=…` line plus the supported list. A 32-bit
+   OS on a Pi gets a "reinstall 64-bit" hint. On an already-installed device
+   the refusal is recorded as an update error so the panel shows it.
 2. **Package install** — installs the `.deb` with `apt`, which pulls in its
    dependencies (`libgtk-3-0`, `libmpv`, etc.).
 3. **Kiosk compositor** — installs [cage](https://github.com/cage-kiosk/cage),
@@ -266,7 +296,8 @@ at every boot.
 
 Every device posts a small health snapshot (`irl-telemetry`,
 `irl-player-telemetry.timer`) to the self-hosted config panel on boot and
-**every 5 minutes**: identity, versions, CPU temperature, throttling, disk,
+**every 5 minutes**: identity (serial, `platform` id, model, OS), versions,
+CPU temperature, throttling, disk,
 memory, Wi-Fi, `uptime_s` / `boot_time`, the last outage window recorded
 by the network watchdog (`last_offline_start` / `last_offline_end`), the
 attached **display(s)** (`displays`: connector, the resolution and refresh
@@ -349,7 +380,9 @@ https://iot-config.theirlnetwork.com/ :
   so a new device appears within a minute of powering on). Open the
   panel, find it in the pending list, click **Approve** — it gets served
   on its next retry. Nothing is ever done on the device itself. A
-  device's serial: `grep Serial /proc/cpuinfo`.
+  device's serial: `sudo irl-device-serial` (the one helper telemetry and
+  the gateway config fetch both use; on a Pi it is the `Serial` line of
+  `/proc/cpuinfo`).
 - **Rejecting** keeps stray/unknown serials out of the pending list.
 - **Rotation:** edit the config JSON in the panel. Devices re-fetch at
   every gateway start and auto-restart daily, so every approved device

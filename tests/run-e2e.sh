@@ -161,6 +161,41 @@ SERVER=$!
 until curl -sf -o /dev/null "http://localhost:$PORT/install.sh"; do :; done
 export IRL_BASE_URL="http://localhost:$PORT"
 
+echo "== 0. Unsupported platform is refused before anything is touched =="
+# an arm64 board that is not a Raspberry Pi: not in SUPPORTED_PLATFORMS
+printf 'Orange Pi 5 Plus' > "$ROOT/proc/model"
+curl -fsSL "http://localhost:$PORT/install.sh" | bash > "$E2E/install0.log" 2>&1; rc=$?
+check "[ $rc -ne 0 ]" "unsupported platform: installer exits non-zero"
+check "grep -q 'This device is not supported by IRL Player' '$E2E/install0.log'" "unsupported platform: refusal message printed"
+check "grep -q 'Detected: arch=arm64 model=Orange Pi 5 Plus os=' '$E2E/install0.log'" "unsupported platform: says what it detected (arch, model, OS)"
+check "grep -q '^    rpi-arm64: Raspberry Pi CM5.* - Raspberry Pi OS 64-bit' '$E2E/install0.log'" "unsupported platform: lists the supported platforms from the registry"
+check "grep -q \"See http://localhost:$PORT for details\" '$E2E/install0.log'" "unsupported platform: points at the website"
+check "! grep -q 'Installing' '$E2E/install0.log'" "unsupported platform: nothing was installed"
+check "! [ -e '$ROOT/etc/irl-player' ] && ! [ -e '$ROOT/var/lib/irl-player' ] && ! [ -e '$ROOT/usr/local/bin/irl-update' ] && ! [ -e '$ROOT/etc/systemd/system/irl-player-kiosk.service' ]" "unsupported platform: left no state dir, scripts or units behind"
+# a 32-bit OS on a real Pi gets the reinstall-64-bit hint
+mkdir -p "$E2E/armhf-bin"; printf '#!/bin/sh\n[ "$1" = "--print-architecture" ] && { echo armhf; exit 0; }\nexit 0\n' > "$E2E/armhf-bin/dpkg"; chmod +x "$E2E/armhf-bin/dpkg"
+printf 'Raspberry Pi 4 Model B Rev 1.4' > "$ROOT/proc/model"
+curl -fsSL "http://localhost:$PORT/install.sh" | PATH="$E2E/armhf-bin:$PATH" bash > "$E2E/install0b.log" 2>&1; rc=$?
+check "[ $rc -ne 0 ] && grep -q 'Detected: arch=armhf' '$E2E/install0b.log' && grep -q '32-bit OS' '$E2E/install0b.log'" "32-bit OS on a Pi: refused with the reinstall-64-bit hint"
+# registry contract: the block the website parses, one package per platform
+check "grep -q '^SUPPORTED_PLATFORMS=\"$' '$REPO/install.sh' && grep -q '^rpi-arm64|arm64|irl-player_<version>_arm64.deb|' '$REPO/install.sh'" "SUPPORTED_PLATFORMS block keeps the format the website parses"
+check "python3 - '$REPO' <<'PYCHK'
+import re, sys, os
+repo = sys.argv[1]; src = open(os.path.join(repo, 'install.sh')).read()
+ver = re.search(r'^VERSION=\"([^\"]+)\"', src, re.M).group(1)
+block = re.search(r'^SUPPORTED_PLATFORMS=\"\n(.*?)^\"', src, re.M | re.S).group(1)
+rows = [l.split('|') for l in block.splitlines() if l.strip()]
+assert rows, 'empty registry'
+assert all(len(r) == 5 for r in rows), rows
+ids = [r[0] for r in rows]; pkgs = [r[2] for r in rows]
+assert len(set(ids)) == len(ids), ids
+assert len(set(pkgs)) == len(pkgs), 'two platforms share a player package: %r' % pkgs
+for i, pkg in zip(ids, pkgs):
+    assert '<version>' in pkg, pkg
+    path = os.path.join(repo, 'packages', pkg.replace('<version>', ver))
+    assert os.path.isfile(path), 'missing player package for %s: %s' % (i, path)
+PYCHK" "every platform in the registry has its own player package for the current VERSION"
+
 echo "== 1. Fresh install (curl | bash, like a real device) =="
 curl -fsSL "http://localhost:$PORT/install.sh" | bash > "$E2E/install1.log" 2>&1
 check "[ \$? -eq 0 ] || grep -q Done '$E2E/install1.log'" "install.sh runs end-to-end without error"
@@ -205,6 +240,12 @@ check "'$ROOT/usr/local/bin/irl-telemetry'" "telemetry reporter runs clean (fire
 TOUT=$("$ROOT/usr/local/bin/irl-telemetry" --print 2>/dev/null || true)
 check "[ -z '$TOUT' ] || printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"serial\"]'" "telemetry --print yields valid JSON (or nothing without a serial)"
 check "grep -q \"T_REV=.$REV.\" '$ROOT/usr/local/bin/irl-telemetry'" "installer revision baked into the telemetry payload"
+check "grep -q 'Detected: arch=arm64 model=Raspberry Pi 4 Model B Rev 1.4 os=.* -> platform rpi-arm64' '$E2E/install1.log'" "installer logs the detected platform id"
+check "[ -x '$ROOT/usr/local/bin/irl-device-serial' ] && [ \"\$('$ROOT/usr/local/bin/irl-device-serial')\" = 10000000abcd1234 ]" "irl-device-serial prints the Pi serial"
+check "grep -q irl-device-serial '$ROOT/usr/local/bin/irl-telemetry' && grep -q irl-device-serial '$ROOT/usr/local/bin/irl-gateway-config' && ! grep -q cpuinfo '$ROOT/usr/local/bin/irl-telemetry' '$ROOT/usr/local/bin/irl-gateway-config'" "telemetry and gateway-config take the serial from irl-device-serial only"
+check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"platform\"]==\"rpi-arm64\", d'" "telemetry reports platform rpi-arm64"
+check "grep -q 'label=Debian-Security' '$ROOT/etc/apt/apt.conf.d/52irl-unattended-upgrades' && grep -q 'origin=Raspberry Pi Foundation,codename=\${distro_codename}' '$ROOT/etc/apt/apt.conf.d/52irl-unattended-upgrades'" "rpi apt_origins hook: Debian-Security plus the Raspberry Pi origins, codename left for apt"
+check "grep -q 'RuntimeWatchdogSec=15' '$ROOT/etc/systemd/system.conf.d/irl-watchdog.conf'" "default hardware_watchdog hook armed the systemd watchdog"
 check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"device_id\"]==\"test-device-uuid-0001\", d.get(\"device_id\"); assert d[\"screen_identity\"]==\"E2E Venue Screen 1\", d.get(\"screen_identity\"); assert d[\"device_token\"]==\"tok-e2e-abcdef\", d.get(\"device_token\")'" "telemetry resolves player device_id, screen_identity, and CMS device_token"
 check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; f=json.load(sys.stdin)[\"throttled_flags\"]; assert f=={\"under_voltage_now\":True,\"freq_capped_now\":False,\"throttled_now\":True,\"under_voltage_occurred\":True,\"throttled_occurred\":True}, f'" "telemetry decodes the vcgencmd throttle bitmask (0x50005)"
 check "printf '%s' \"\$TOUT\" | python3 -c 'import json,sys; p=json.load(sys.stdin)[\"disk_free_pct\"]; assert isinstance(p,float) and 0<=p<=100, p'" "telemetry reports root-fs free space as a percentage"
@@ -719,6 +760,14 @@ echo disconnected > "$ROOT/sys/class/drm/card1-HDMI-A-1/status"
 TOUTH=$("$ROOT/usr/local/bin/irl-telemetry" --print 2>/dev/null || true)
 check "printf '%s' \"\$TOUTH\" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d[\"displays\"]==[] and d[\"screen_resolution\"] is None, d'" "headless: displays [] and screen_resolution null"
 echo connected > "$ROOT/sys/class/drm/card1-HDMI-A-1/status"
+
+echo "== 10d. Installed device that no longer matches a platform reports it =="
+# the state dir marks an installed device (earlier sections reset it)
+mkdir -p "$ROOT/var/lib/irl-player"
+printf 'Orange Pi 5 Plus' > "$ROOT/proc/model"
+bash "$SITE/install.sh" > "$E2E/install-unsup.log" 2>&1; rc=$?
+check "[ $rc -ne 0 ] && grep -q '^[0-9]* rev [0-9]* unsupported platform (arch=arm64 model=Orange Pi 5 Plus os=' '$ROOT/var/lib/irl-player/last-update-error'" "refusal on an installed device lands in last-update-error (telemetry carries it)"
+printf 'Raspberry Pi 4 Model B Rev 1.4' > "$ROOT/proc/model"
 
 echo "== 11. Uninstall removes everything =="
 bash "$SITE/uninstall.sh" > "$E2E/uninstall.log" 2>&1 && ok "uninstall.sh runs clean" || bad "uninstall.sh errored"
