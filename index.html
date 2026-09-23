@@ -843,7 +843,7 @@
     <span>IRL Player for Linux · IRL Network</span>
     <!-- filled in live from install.sh by the script below; this text is the
          fallback if the fetch fails (e.g. viewing the file offline) -->
-    <span id="footer-versions">Guide version 26</span>
+    <span id="footer-versions">Guide version 27</span>
   </footer>
 </div>
 
@@ -858,7 +858,7 @@
       var fold = section && section.querySelector('details.fold');
       if (!fold) return;
       fold.open = true;
-      section.scrollIntoView({ block: 'start' });
+      section.scrollIntoView({ block: 'start', behavior: 'instant' }); // the page's smooth scroll would be cut short by the browser's own fragment jump
     }
     openHash();
     window.addEventListener('hashchange', openHash);
