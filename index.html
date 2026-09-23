@@ -518,8 +518,8 @@
         <h2>Have an Android box instead?</h2>
         <p class="sub">
           The same player also comes as an Android app for the RK3568 venue box
-          (Android 11). No command line: copy one file onto a USB stick, install
-          it on the box, and make it the box's Home app.
+          (Android 11). No command line: get one file onto the box (USB stick, or
+          download it right there), install it, and make it the box's Home app.
         </p>
       </span>
       <svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke-width="2.4" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
@@ -528,13 +528,18 @@
     <div class="steps">
       <div class="step">
         <div>
-          <h3>Download the app and put it on a USB stick</h3>
+          <h3>Download the app (on your computer, or on the box)</h3>
           <p>On your computer, download the app file and copy it onto a USB stick
           (a normal stick, formatted FAT32 or exFAT, is fine):</p>
           <p style="margin-top:0.7rem;"><a class="btn" id="android-apk" href="packages/android-arm64/irl-player_1.2.8_arm64.apk" download>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 21h16"/></svg>
             Download IRL Player for Android (version 1.2.8)
           </a></p>
+          <p><strong>No USB stick? Download it on the box itself.</strong> If the box has
+          a web browser, open <strong>linux-player.theirlnetwork.com</strong> on it and tap
+          the same button. The file lands in the box's <strong>Downloads</strong> folder;
+          open it from the browser's downloads list or the file manager and carry on with
+          the next step.</p>
           <p>The app runs only on 64-bit Android boxes (arm64). It is not meant for
           phones — installing it there is harmless, but don't make it a phone's Home app.</p>
         </div>
@@ -545,11 +550,13 @@
           <p>Plug the stick into one of the box's USB ports. On the box, open the file
           manager (<strong>Files</strong>, or whatever the box ships — failing that,
           <strong>Settings → Storage</strong> lists the stick and lets you browse it) and
-          tap the app file.</p>
+          tap the app file. If you downloaded it on the box, tap it in the browser's
+          downloads list instead.</p>
           <p>The first time, Android refuses: <em>"For your security, your device is not
           allowed to install unknown apps from this source."</em> Tap
           <strong>Settings</strong> in that dialog, switch <strong>Allow from this
-          source</strong> on, and go back. Android asks this once, for the file manager.</p>
+          source</strong> on, and go back. Android asks this once per app you open the file
+          from (the file manager or the browser).</p>
           <p>Then tap <strong>Install</strong>, and when it finishes, <strong>Open</strong>.
           The player fills the screen with its pairing code.</p>
         </div>
@@ -836,7 +843,7 @@
     <span>IRL Player for Linux · IRL Network</span>
     <!-- filled in live from install.sh by the script below; this text is the
          fallback if the fetch fails (e.g. viewing the file offline) -->
-    <span id="footer-versions">Guide version 23</span>
+    <span id="footer-versions">Guide version 24</span>
   </footer>
 </div>
 
