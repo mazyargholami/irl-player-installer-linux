@@ -843,11 +843,27 @@
     <span>IRL Player for Linux · IRL Network</span>
     <!-- filled in live from install.sh by the script below; this text is the
          fallback if the fetch fails (e.g. viewing the file offline) -->
-    <span id="footer-versions">Guide version 24</span>
+    <span id="footer-versions">Guide version 25</span>
   </footer>
 </div>
 
 <script>
+  // A link to a section (e.g. /#android) opens that section's fold and scrolls
+  // to it, so a shared link lands on the open content rather than a closed summary.
+  (function () {
+    function openHash() {
+      var id = location.hash.slice(1);
+      if (!id) return;
+      var section = document.getElementById(id);
+      var fold = section && section.querySelector('details.fold');
+      if (!fold) return;
+      fold.open = true;
+      section.scrollIntoView({ block: 'start' });
+    }
+    openHash();
+    window.addEventListener('hashchange', openHash);
+  })();
+
   document.querySelectorAll('.btn[data-copy]').forEach(function (btn) {
     btn.addEventListener('click', function () {
       var text = document.getElementById(btn.getAttribute('data-copy')).textContent.trim();
