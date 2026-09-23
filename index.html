@@ -252,7 +252,8 @@
   .step p { margin: 0; color: var(--muted); font-size: 0.94rem; text-wrap: pretty; }
   .step p + p { margin-top: 0.55rem; }
   .step p strong { color: var(--ink); }
-  .step a { color: var(--accent-ink); font-weight: 600; }
+  .step a:not(.btn) { color: var(--accent-ink); font-weight: 600; }
+  .step a.btn { text-decoration: none; }
 
   /* everyday-use cards */
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 0.9rem; }
@@ -360,9 +361,11 @@
 
   <!-- Supported platforms: rebuilt live from install.sh's SUPPORTED_PLATFORMS
        block by the script at the bottom, so this list can never disagree with
-       what the installer accepts. The static pills are the offline fallback. -->
+       what the installer accepts. The static pills are the offline fallback;
+       the Android pill is static for good (the APK is not an installer platform). -->
   <div class="pills" id="platform-pills">
     <span class="pill ok">Raspberry Pi CM5, Pi 5, 4, 3, Zero 2 W · Raspberry Pi OS 64-bit (Lite or Desktop)</span>
+    <span class="pill ok" id="android-pill">Android venue box (RK3568, Android 11) · APK, see below</span>
     <span class="pill soon">More Linux devices coming soon</span>
   </div>
 
@@ -501,6 +504,78 @@
           <h3>Done — it runs itself</h3>
           <p>The player fills the screen. You can unplug the keyboard and mouse now.
           From here on, the Pi is an IRL screen: <strong>give it power and it plays.</strong></p>
+        </div>
+      </div>
+    </div>
+    </div>
+    </details>
+  </section>
+
+  <section id="android">
+    <details class="fold">
+    <summary>
+      <span>
+        <h2>Have an Android box instead?</h2>
+        <p class="sub">
+          The same player also comes as an Android app for the RK3568 venue box
+          (Android 11). No command line: copy one file onto a USB stick, install
+          it on the box, and make it the box's Home app.
+        </p>
+      </span>
+      <svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke-width="2.4" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+    </summary>
+    <div class="foldbody">
+    <div class="steps">
+      <div class="step">
+        <div>
+          <h3>Download the app and put it on a USB stick</h3>
+          <p>On your computer, download the app file and copy it onto a USB stick
+          (a normal stick, formatted FAT32 or exFAT, is fine):</p>
+          <p style="margin-top:0.7rem;"><a class="btn" id="android-apk" href="packages/android-arm64/irl-player_1.2.8_arm64.apk" download>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 21h16"/></svg>
+            Download IRL Player for Android (version 1.2.8)
+          </a></p>
+          <p>The app runs only on 64-bit Android boxes (arm64). It is not meant for
+          phones — installing it there is harmless, but don't make it a phone's Home app.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div>
+          <h3>Install it on the box</h3>
+          <p>Plug the stick into one of the box's USB ports. On the box, open the file
+          manager (<strong>Files</strong>, or whatever the box ships — failing that,
+          <strong>Settings → Storage</strong> lists the stick and lets you browse it) and
+          tap the app file.</p>
+          <p>The first time, Android refuses: <em>"For your security, your device is not
+          allowed to install unknown apps from this source."</em> Tap
+          <strong>Settings</strong> in that dialog, switch <strong>Allow from this
+          source</strong> on, and go back. Android asks this once, for the file manager.</p>
+          <p>Then tap <strong>Install</strong>, and when it finishes, <strong>Open</strong>.
+          The player fills the screen with its pairing code.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div>
+          <h3>Make it the box's Home app</h3>
+          <p>This is what makes the player start by itself on every power-on. On the box,
+          once: <strong>Settings → Apps → Default apps → Home app → IRL Player</strong>.
+          (Some boxes keep it under <strong>Settings → Apps → Manage apps → ⋮ → Default
+          apps</strong>; or, the first time you press the Home button, Android asks which
+          launcher to use — pick <strong>IRL Player</strong> and <strong>Always</strong>.)</p>
+          <p>From now on a power cut, a reboot, or a press of the Home button all land on the
+          player. To get back to the box's own menus later, undo the same setting.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div>
+          <h3>Pair it — and that's it</h3>
+          <p>Pair the screen from your dashboard using the code on the display, exactly as
+          you would a Raspberry Pi. <strong>Give the box power and it plays.</strong></p>
+          <p><strong>Updating later:</strong> the Android app does not update itself yet.
+          When a new version is out, repeat the first two steps with the new file — Android
+          installs it over the old one and keeps the pairing and cached media.
+          <strong>Removing it:</strong> <strong>Settings → Apps → IRL Player →
+          Uninstall</strong> (this also forgets the pairing, so a reinstall shows a new code).</p>
         </div>
       </div>
     </div>
@@ -761,7 +836,7 @@
     <span>IRL Player for Linux · IRL Network</span>
     <!-- filled in live from install.sh by the script below; this text is the
          fallback if the fetch fails (e.g. viewing the file offline) -->
-    <span id="footer-versions">Guide version 22</span>
+    <span id="footer-versions">Guide version 23</span>
   </footer>
 </div>
 
@@ -799,6 +874,7 @@
           .map(function (l) { var f = l.split('|'); return { id: f[0], arch: f[1], pkg: f[2], devices: f[3], os: f[4] }; })
           .filter(function (p) { return p.id && p.pkg && p.devices; });
         if (platforms.length && pills) {
+          var android = document.getElementById('android-pill');
           pills.textContent = '';
           platforms.forEach(function (p) {
             var span = document.createElement('span');
@@ -806,6 +882,7 @@
             span.textContent = p.devices + (p.os ? ' · ' + p.os : '');
             pills.appendChild(span);
           });
+          if (android) pills.appendChild(android);   // Android is not an installer platform; its pill is static
           var soon = document.createElement('span');
           soon.className = 'pill soon';
           soon.textContent = 'More Linux devices coming soon';
@@ -828,5 +905,13 @@
         }
       })
       .catch(function () { /* offline: fallback text stays */ });
+    // The Android APK is linked by hand (it is not in SUPPORTED_PLATFORMS), so
+    // check the link points at a file that exists too.
+    var apk = document.getElementById('android-apk');
+    if (apk) {
+      fetch(apk.getAttribute('href'), { method: 'HEAD', cache: 'no-store' })
+        .then(function (r) { if (!r.ok) el.textContent += ' (Android package missing!)'; })
+        .catch(function () { /* offline: leave as-is */ });
+    }
   })();
 </script>

@@ -34,8 +34,10 @@ The list is the `SUPPORTED_PLATFORMS` block at the top of `install.sh`; see
 ├── install.sh                        one-line installer (platform-aware)
 ├── uninstall.sh                      one-line uninstaller
 ├── packages/                         one folder per platform (named after its id)
-│   └── rpi-arm64/
-│       └── irl-player_1.2.8_arm64.deb    one .deb per version
+│   ├── rpi-arm64/
+│   │   └── irl-player_1.2.8_arm64.deb    one .deb per version
+│   └── android-arm64/
+│       └── irl-player_1.2.8_arm64.apk    the Android box build (served only, not installer-managed)
 └── .github/workflows/deploy-pages.yml   auto-deploys the website to GitHub Pages
 ```
 
@@ -49,6 +51,7 @@ https://linux-player.theirlnetwork.com/            ← website / guide
 https://linux-player.theirlnetwork.com/install.sh  ← installer
 https://linux-player.theirlnetwork.com/uninstall.sh
 https://linux-player.theirlnetwork.com/packages/<platform>/…  ← .deb packages
+https://linux-player.theirlnetwork.com/packages/android-arm64/…  ← the Android APK
 ```
 
 One-time setup after pushing to GitHub:
@@ -99,6 +102,18 @@ The website footer reads `INSTALLER_REV` and `VERSION` live from the
 published `install.sh` (and verifies the matching `.deb` exists in
 `packages/<platform>/`, showing "package missing!" if it doesn't), so it always shows
 what's actually deployed — nothing to update by hand there.
+
+**Android box (RK3568, Android 11)** — the same player as an APK, in
+`packages/android-arm64/`. It is *not* an installer platform: nothing in
+`install.sh` or `SUPPORTED_PLATFORMS` knows about it, the box has no
+auto-update, watchdog or telemetry, and the site's "Have an Android box
+instead?" section links the file by hand (USB stick → install → set as the
+Home app). To release a new Android build: drop
+`packages/android-arm64/irl-player_<version>_arm64.apk` in, update the link
+and version text in `index.html`, bump the guide version. Every APK must be
+signed with the same release key (certificate SHA-256 ending `…8cebd5`) or
+boxes refuse it as an update; the key and the full install/adb/log guide live
+in the `irl-player` repo (`docs/android-install.md`).
 
 ## Auto-update
 
