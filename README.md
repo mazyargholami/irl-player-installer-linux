@@ -33,6 +33,8 @@ The list is the `SUPPORTED_PLATFORMS` block at the top of `install.sh`; see
 ├── index.html                        website: install / uninstall / help guide
 ├── install.sh                        one-line installer (platform-aware)
 ├── uninstall.sh                      one-line uninstaller
+├── screen.txt                        fleet screen switch, Linux devices ("1" on / "0" off)
+├── android_screen.txt                fleet screen switch, Android boxes (same contract)
 ├── packages/                         one folder per platform (named after its id)
 │   ├── rpi-arm64/
 │   │   └── irl-player_1.2.8_arm64.deb    one .deb per version
@@ -52,6 +54,8 @@ https://linux-player.theirlnetwork.com/install.sh  ← installer
 https://linux-player.theirlnetwork.com/uninstall.sh
 https://linux-player.theirlnetwork.com/packages/<platform>/…  ← .deb packages
 https://linux-player.theirlnetwork.com/packages/android-arm64/…  ← the Android APK
+https://linux-player.theirlnetwork.com/screen.txt          ← screen switch, Linux fleet
+https://linux-player.theirlnetwork.com/android_screen.txt  ← screen switch, Android boxes
 ```
 
 One-time setup after pushing to GitHub:
@@ -339,6 +343,43 @@ its next post, and the panel keeps re-sending an id until it is acked or
 expires (24 h). A click lands within about 5 minutes on an online device; a
 screen with no internet cannot receive it — that is the point. Only those
 two verbs exist; nothing in the reply is ever executed as-is.
+
+## Fleet screen switch
+
+Two plain-text files at the root of the site turn a whole fleet's screens
+off and back on without touching a single device:
+
+| File | Switches | Read by |
+|---|---|---|
+| `screen.txt` | the Linux fleet (every installer-managed device) | `irl-screen` on each device, run by `irl-player-screen.timer` once a minute |
+| `android_screen.txt` | the Android boxes | the Android player itself, once a minute |
+
+The contract is identical for both files:
+
+- Exactly `0` (surrounding whitespace and the trailing newline are ignored)
+  = screens go dark. **Anything else** — `1`, an empty file, a missing file,
+  a 404, an unreachable site — = play normally. Only an explicit `0` ever
+  blanks a screen, so a broken site or a lost connection can never darken a
+  venue (fail-safe on).
+- Both readers poll **once a minute** with a cache-buster (`?t=<epoch>`), so
+  an edit reaches the screens within about a minute despite the Pages CDN
+  caching files for ~10 minutes.
+- Each file keeps its name, stays at the site root and is served as plain
+  text. The URL is baked into every device in the field (`irl-screen` on
+  Linux, the APK on Android), so moving or renaming a file silently turns
+  that fleet's switch into "always on".
+- They are two files on purpose: the Linux fleet and the Android boxes are
+  switched independently.
+
+Both files are `1` by default. To darken a fleet, commit `0` to `main` in
+its file; commit `1` back to wake it. Neither file is part of `install.sh`,
+so editing one is *not* a fleet rollout — no reinstall, no player restart.
+
+On a Linux device `irl-screen` turns the outputs off with `wlr-randr` while
+the player keeps running (instant wake, and the freeze watchdog stays quiet
+because there is nothing to capture). On an Android box the player itself
+goes black and plays nothing; the box stays up. The e2e suite asserts both
+files default to `1`.
 
 ## Canary rollout
 
