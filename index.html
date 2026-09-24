@@ -365,7 +365,7 @@
        the Android pill is static for good (the APK is not an installer platform). -->
   <div class="pills" id="platform-pills">
     <span class="pill ok">Raspberry Pi CM5, Pi 5, 4, 3, Zero 2 W · Raspberry Pi OS 64-bit (Lite or Desktop)</span>
-    <span class="pill ok" id="android-pill">Android venue box (RK3568, Android 11) · APK, see below</span>
+    <span class="pill ok" id="android-pill">Android · the RK3568 venue box or any 64-bit Android device · APK, see below</span>
     <span class="pill soon">More Linux devices coming soon</span>
   </div>
 
@@ -515,11 +515,13 @@
     <details class="fold">
     <summary>
       <span>
-        <h2>Have an Android box instead?</h2>
+        <h2>Have an Android device instead?</h2>
         <p class="sub">
-          The same player also comes as an Android app for the RK3568 venue box
-          (Android 11). No command line: get one file onto the box (USB stick, or
-          download it right there), install it, and make it the box's Home app.
+          The same player also comes as an Android app. It is made for the RK3568
+          venue box (Android 11), but any 64-bit Android device works the same way: a
+          TV box, a tablet, a phone-sized screen. No command line: get one file onto
+          the device (USB stick, or download it right there), install it, and make it
+          the Home app. The steps below say "box" — read it as your device.
         </p>
       </span>
       <svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke-width="2.4" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
@@ -540,8 +542,10 @@
           the same button. The file lands in the box's <strong>Downloads</strong> folder;
           open it from the browser's downloads list or the file manager and carry on with
           the next step.</p>
-          <p>The app runs only on 64-bit Android boxes (arm64). It is not meant for
-          phones — installing it there is harmless, but don't make it a phone's Home app.</p>
+          <p>The app needs a 64-bit Android device (arm64) — that is every current
+          TV box, tablet and phone. The RK3568 venue box is what we test on; another
+          device should behave the same. A phone is fine for a quick look, but don't
+          make it the phone's Home app.</p>
         </div>
       </div>
       <div class="step">
@@ -843,7 +847,7 @@
     <span>IRL Player for Linux · IRL Network</span>
     <!-- filled in live from install.sh by the script below; this text is the
          fallback if the fetch fails (e.g. viewing the file offline) -->
-    <span id="footer-versions">Guide version 27</span>
+    <span id="footer-versions">Guide version 28</span>
   </footer>
 </div>
 
