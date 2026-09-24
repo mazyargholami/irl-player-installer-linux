@@ -717,6 +717,9 @@ echo "== 10b. Fleet screen switch: screen.txt drives displays off/on =="
 # fake wayland socket in run/user/1000. wlr-randr is stubbed to report two
 # HDMI outputs, so multi-display handling is covered too.
 check "[ \"\$(tr -d '[:space:]' < '$REPO/screen.txt')\" = 1 ]" "repo screen.txt defaults to screens ON"
+# android_screen.txt is the Android boxes' copy of the same switch (read by the
+# APK, not by anything install.sh ships) — same 0/1 contract, same default.
+check "[ \"\$(tr -d '[:space:]' < '$REPO/android_screen.txt')\" = 1 ]" "repo android_screen.txt defaults to screens ON"
 cat > "$ROOT/simbin/wlr-randr" <<STUB
 #!/bin/sh
 if [ \$# -eq 0 ]; then
