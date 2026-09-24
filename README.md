@@ -107,8 +107,10 @@ published `install.sh` (and verifies the matching `.deb` exists in
 `packages/<platform>/`, showing "package missing!" if it doesn't), so it always shows
 what's actually deployed — nothing to update by hand there.
 
-**Android box (RK3568, Android 11)** — the same player as an APK, in
-`packages/android-arm64/`. It is *not* an installer platform: nothing in
+**Android (RK3568 venue box, Android 11 — or any 64-bit Android device)** —
+the same player as an APK, in `packages/android-arm64/`; the box is what is
+tested, the site tells users any arm64 Android device works the same way.
+It is *not* an installer platform: nothing in
 `install.sh` or `SUPPORTED_PLATFORMS` knows about it, the box has no
 auto-update, watchdog or telemetry, and the site's "Have an Android box
 instead?" section links the file by hand (USB stick → install → set as the
