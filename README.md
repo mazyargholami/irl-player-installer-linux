@@ -21,7 +21,7 @@ platforms, read live from the installer). Currently supported:
 
 | Platform id | Devices | Operating system | Package |
 |---|---|---|---|
-| `rpi-arm64` | Raspberry Pi CM5, Pi 5, 4, 3, Zero 2 W | Raspberry Pi OS 64-bit (Lite or Desktop) | `packages/rpi-arm64/irl-player_1.2.8_arm64.deb` |
+| `rpi-arm64` | Raspberry Pi CM5, Pi 5, 4, 3, Zero 2 W | Raspberry Pi OS 64-bit (Lite or Desktop) | `packages/rpi-arm64/irl-player_1.3.0_arm64.deb` |
 
 Every platform has its own player package — two platforms never share one.
 The list is the `SUPPORTED_PLATFORMS` block at the top of `install.sh`; see
@@ -37,9 +37,10 @@ The list is the `SUPPORTED_PLATFORMS` block at the top of `install.sh`; see
 ├── android_screen.txt                fleet screen switch, Android boxes (same contract)
 ├── packages/                         one folder per platform (named after its id)
 │   ├── rpi-arm64/
-│   │   └── irl-player_1.2.8_arm64.deb    one .deb per version
+│   │   └── irl-player_1.3.0_arm64.deb    one .deb per version (older ones kept)
 │   └── android-arm64/
-│       └── irl-player_1.2.8_arm64.apk    the Android box build (served only, not installer-managed)
+│       ├── irl-player_1.3.0_arm64.apk    the Android box build (served only, not installer-managed)
+│       └── irl-player_1.3.0_arm64.apk.sha1   its checksum (sha1sum -c)
 └── .github/workflows/deploy-pages.yml   auto-deploys the website to GitHub Pages
 ```
 
