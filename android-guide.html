@@ -486,6 +486,9 @@ adb shell pm enable com.adviewer</code></pre><button class="copy" type="button">
 adb install -r <span data-apk></span>     <span class="c">:: reinstall, keeping data</span></code></pre><button class="copy" type="button">Copy</button></div>
       <p>Or copy the APK to a USB stick and open it with the board's file manager
       (allow "install unknown apps" when asked).</p>
+      <div class="note"><strong>Installing is not the end.</strong> Before anything else is set up on
+      the box, make the player its device owner — <a href="#device-owner">section 8</a>, one command.
+      Without it the box plays fine but <strong>never updates itself</strong>.</div>
 
       <h3>The package name</h3>
       <p>Everything below uses the app's package name, which is
@@ -698,7 +701,7 @@ adb reboot                                   <span class="c">:: reboot the board
 
   <footer>
     <span>IRL Player for Android · IRL Network · <a href="index.html">main guide</a></span>
-    <span id="footer-versions">Guide version 31 · Android app <span data-apk-version></span></span>
+    <span id="footer-versions">Guide version 32 · Android app <span data-apk-version></span></span>
   </footer>
 </div>
 
