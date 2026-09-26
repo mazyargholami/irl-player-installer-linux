@@ -262,8 +262,8 @@
   <h1>Set up the <em>Android venue box</em>.</h1>
   <p class="lede">
     Everything needed to take a stock YS-M68 display (Rockchip RK3568, Android 11),
-    remove its factory advertising app, install the IRL Player as the Home app and
-    hand it over ready to pair. Written for a technician with a Windows PC on the
+    remove its factory advertising app, install the IRL Player as the Home app, make it the
+    device owner so it updates itself, and hand it over ready to pair. Written for a technician with a Windows PC on the
     same network. For a plain "put the app on any Android device" walkthrough, use
     the <a href="index.html#android">Android section of the main guide</a>.
   </p>
@@ -285,7 +285,7 @@
     <a href="#inspect"><b>5</b> What's installed</a>
     <a href="#factory-app"><b>6</b> Remove the factory app</a>
     <a href="#install"><b>7</b> Install the player</a>
-    <a href="#device-owner"><b>8</b> Device Owner (developers)</a>
+    <a href="#device-owner"><b>8</b> Device Owner &amp; auto-update</a>
     <a href="#checklist"><b>9</b> Deployment checklist</a>
     <a href="#linux"><b>10</b> Linux option</a>
     <a href="#commands"><b>11</b> Command reference</a>
@@ -527,111 +527,68 @@ adb shell dumpsys window | findstr /i "mCurrentFocus"</code></pre><button class=
     <summary>
       <span>
         <h2><span class="num">8</span>Device Owner mode (silent auto-update)</h2>
-        <p class="sub">For developers. Not available in the current build — read before trying it on a board.</p>
+        <p class="sub">One command per box, before it leaves the bench. Boxes set up with 1.3.1 or older need a factory reset first.</p>
       </span>
       <svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke-width="2.4" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
     </summary>
     <div class="foldbody">
-      <div class="note"><strong>Version <span data-apk-version></span> does not ship a device-admin
-      receiver</strong>, so <code>dpm set-device-owner</code> fails with "Unable to find component"
-      on it and the Android app does <em>not</em> update itself yet — a new version is installed
-      by repeating step 7 (Android installs it over the old one and keeps the pairing). The
-      receiver and manifest entries below have to exist <strong>inside the APK</strong>; they
-      are added in the app's source (the <code>irl-player</code> repo) before a release, not
-      on the board.</div>
-      <p>Device owner gives the app silent install, reboot and kiosk powers <strong>without
-      root</strong>. It must be set <strong>before</strong> deployment — adding it later needs a
-      factory reset.</p>
+      <div class="note"><strong>Since version 1.4.0 the app updates itself.</strong> Once an hour it reads
+      <code>update.json</code> on this site; when a newer build is listed it downloads it, checks the
+      hash and installs it silently, keeping the pairing and cached media. It can only do that as the
+      box's <strong>device owner</strong>, which is set once per box with the command below. A box that
+      is not device owner keeps playing the version it has and just logs one line per check — nothing
+      breaks, it simply never updates.</div>
 
-      <h3>8.1 Add a DeviceAdminReceiver</h3>
-      <div class="codebox"><pre><code>package com.theirlnetwork.player
-
-import android.app.admin.DeviceAdminReceiver
-
-class MyDeviceAdminReceiver : DeviceAdminReceiver()</code></pre><button class="copy" type="button">Copy</button></div>
-
-      <h3>8.2 <code>res/xml/device_admin.xml</code></h3>
-      <div class="codebox"><pre><code>&lt;device-admin xmlns:android="http://schemas.android.com/apk/res/android"&gt;
-    &lt;uses-policies /&gt;
-&lt;/device-admin&gt;</code></pre><button class="copy" type="button">Copy</button></div>
-
-      <h3>8.3 Register it in <code>AndroidManifest.xml</code></h3>
-      <div class="codebox"><pre><code>&lt;receiver
-    android:name=".MyDeviceAdminReceiver"
-    android:permission="android.permission.BIND_DEVICE_ADMIN"
-    android:exported="true"&gt;
-    &lt;meta-data
-        android:name="android.app.device_admin"
-        android:resource="@xml/device_admin" /&gt;
-    &lt;intent-filter&gt;
-        &lt;action android:name="android.app.action.DEVICE_ADMIN_ENABLED" /&gt;
-    &lt;/intent-filter&gt;
-&lt;/receiver&gt;</code></pre><button class="copy" type="button">Copy</button></div>
-
-      <h3>8.4 Install, clear accounts, set owner</h3>
-      <div class="codebox"><pre><code>adb install <span data-apk></span>
-<span class="c">:: Settings -&gt; Accounts -&gt; remove every account first</span>
-adb shell dpm set-device-owner com.theirlnetwork.player/.MyDeviceAdminReceiver
+      <h3>8.1 New box: make the player the device owner</h3>
+      <p>Right after installing the app (step 7) and <strong>before</strong> anything else is set up on the box:</p>
+      <ol>
+        <li><strong>Settings → Accounts</strong> → remove every account. Device owner refuses while one exists.</li>
+        <li>Run the two commands:</li>
+      </ol>
+      <div class="codebox"><pre><code>adb shell dpm set-device-owner com.theirlnetwork.player/.IrlDeviceAdminReceiver
 adb shell dpm list-owners</code></pre><button class="copy" type="button">Copy</button></div>
+      <p><code>list-owners</code> must name <code>com.theirlnetwork.player</code>. Then reboot and confirm the
+      player itself agrees:</p>
+      <div class="codebox"><pre><code>adb reboot
+adb logcat -d | findstr /i "device owner"      <span class="c">:: expect: [Android] device owner: true</span></code></pre><button class="copy" type="button">Copy</button></div>
       <div class="tbl"><table>
         <tr><th>Error</th><th>Meaning</th></tr>
         <tr><td><code>there are already some accounts on the device</code></td><td>Remove all accounts and retry</td></tr>
         <tr><td><code>device owner is already set</code></td><td>Another app owns it — needs a factory reset</td></tr>
-        <tr><td><code>Unable to find component</code></td><td>Receiver not in the build, or not registered correctly in the manifest</td></tr>
+        <tr><td><code>Unable to find component</code></td><td>An APK older than 1.3.2 is installed — install the current one first</td></tr>
       </table></div>
-      <p>Check from inside the app:</p>
-      <div class="codebox"><pre><code>val dpm = getSystemService(DEVICE_POLICY_SERVICE) as DevicePolicyManager
-val isOwner = dpm.isDeviceOwnerApp(packageName)</code></pre><button class="copy" type="button">Copy</button></div>
 
-      <h3>8.5 Silent install with PackageInstaller</h3>
-      <div class="codebox"><pre><code>fun installSilently(context: Context, apk: File) {
-    val installer = context.packageManager.packageInstaller
-    val params = PackageInstaller.SessionParams(
-        PackageInstaller.SessionParams.MODE_FULL_INSTALL
-    )
-    val sessionId = installer.createSession(params)
-    installer.openSession(sessionId).use { session -&gt;
-        session.openWrite("package", 0, apk.length()).use { out -&gt;
-            apk.inputStream().copyTo(out)
-            session.fsync(out)
-        }
-        val intent = Intent(context, InstallResultReceiver::class.java)
-        val pi = PendingIntent.getBroadcast(
-            context, sessionId, intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
-        )
-        session.commit(pi.intentSender)
-    }
-}</code></pre><button class="copy" type="button">Copy</button></div>
+      <h3>8.2 Existing boxes (set up with 1.3.1 or older)</h3>
+      <p>Device owner has to be set on a fresh box. A box that is already in use cannot be converted
+      in place: <strong>factory reset it</strong> (Settings → System → Reset), then go through steps 3
+      to 7 again, set the device owner as above, make the player the Home app and <strong>re-pair</strong>
+      the screen from the dashboard (the reset forgets the pairing). One last visit per box — after
+      that it never needs a USB stick again.</p>
 
-      <h3>8.6 Update check</h3>
-      <p>Host a small JSON next to the APK on our server:</p>
-      <div class="codebox"><pre><code>{
-  "versionCode": 42,
-  "versionName": "1.4.2",
-  "url": "https://our-server/player/player-1.4.2.apk",
-  "sha256": "…"
-}</code></pre><button class="copy" type="button">Copy</button></div>
-      <p>The player, on a schedule (e.g. hourly via WorkManager):</p>
-      <ol>
-        <li>Fetch the JSON</li>
-        <li>Compare <code>versionCode</code> with its own</li>
-        <li>If newer: download the APK to internal storage</li>
-        <li>Verify the SHA-256 hash</li>
-        <li><code>installSilently()</code> — the app restarts itself into the new version</li>
-        <li>Keep the previous APK so a failed update can roll back</li>
-      </ol>
+      <h3>8.3 How updates roll out</h3>
+      <ul>
+        <li>The box marked as <strong>canary</strong> applies a new version within about an hour of it being published.</li>
+        <li>Every other box waits <code>canaryDelayHours</code> (24 today) after it first sees the new version, so a bad build shows up on the canary a day before it reaches the venues. <code>0</code> means everyone at once.</li>
+        <li>Only a <em>higher</em> version code is ever installed — a box never downgrades itself.</li>
+        <li>Any failure (offline, missing file, bad hash, refused install) is logged and retried the next hour; playback is never interrupted.</li>
+      </ul>
+      <p>Watch a box's update checks as they happen:</p>
+      <div class="codebox"><pre><code>adb logcat -s theirlnetwork.update</code></pre><button class="copy" type="button">Copy</button></div>
+      <p>The hand controls — forcing a check, marking a box as the canary, rolling back to the previous
+      APK the app keeps on the box — are documented in <code>docs/android-install.md</code> of the
+      <code>irl-player</code> app repository.</p>
 
-      <h3>8.7 Other device owner powers</h3>
-      <div class="codebox"><pre><code><span class="c">// last-resort reboot</span>
-dpm.reboot(adminComponent)
-
-<span class="c">// kiosk mode</span>
-dpm.setLockTaskPackages(adminComponent, arrayOf(packageName))
-startLockTask()</code></pre><button class="copy" type="button">Copy</button></div>
-      <div class="note"><strong>Rules that must never be broken:</strong> the package name and the
-      signing key stay the same forever, and <code>versionCode</code> always increases. Change
-      either and the update is rejected as a different app.</div>
+      <h3>8.4 Publishing a new version (release manager)</h3>
+      <p>Put the release's <code>irl-player_&lt;version&gt;_arm64.apk</code>, its <code>.sha1</code> and the
+      <code>update.json</code> that CI writes next to it into <code>packages/android-arm64/</code> on this
+      site, and update the download link on both pages. <strong>Never hand-write
+      <code>update.json</code></strong>: its <code>versionCode</code> is the arm64 build's code (2000 + the
+      build number — 1.3.1 is 2002, 1.3.2 is 2003, 1.4.0 is 2004) and the boxes only move to a strictly
+      higher one.</p>
+      <div class="note"><strong>Rules that must never be broken:</strong> the package name
+      <code>com.theirlnetwork.player</code> and the signing key stay the same forever, and
+      <code>versionCode</code> always increases. Change either and every box rejects the update as a
+      different app.</div>
     </div>
     </details>
   </section>
@@ -650,13 +607,14 @@ startLockTask()</code></pre><button class="copy" type="button">Copy</button></di
         <li>Connect over network ADB</li>
         <li>Disable / remove <code>com.adviewer</code></li>
         <li><span><code>adb install <span data-apk></span></code></span></li>
-        <li><span>Remove all accounts <small>needed for device owner mode, once a build supports it</small></span></li>
-        <li><span><code>adb shell dpm set-device-owner com.theirlnetwork.player/.MyDeviceAdminReceiver</code> <small>skip on version <span data-apk-version></span> — see section 8</small></span></li>
-        <li><span>Verify with <code>adb shell dpm list-owners</code> <small>same</small></span></li>
+        <li><span>Remove all accounts <small>Settings → Accounts — device owner refuses while one exists</small></span></li>
+        <li><span><code>adb shell dpm set-device-owner com.theirlnetwork.player/.IrlDeviceAdminReceiver</code></span></li>
+        <li><span>Verify with <code>adb shell dpm list-owners</code></span></li>
+        <li><span>Reboot; the log says <code>device owner: true</code></span></li>
         <li>Set the IRL Player as the home app</li>
         <li>Reboot, confirm it starts fullscreen in portrait</li>
         <li>Confirm video plays smoothly and the screen never sleeps</li>
-        <li><span>Confirm the update check reaches our server <small>once a build supports it</small></span></li>
+        <li><span>Confirm the update check reaches our server <small><code>adb logcat -s theirlnetwork.update</code> shows a check with no error</small></span></li>
         <li>Pair the screen from the dashboard with the code on the display</li>
         <li>Record the board's MAC / serial in our fleet list</li>
       </ul>
@@ -729,9 +687,10 @@ adb install -r <span data-apk></span>    <span class="c">:: install / reinstall 
 adb shell cmd shortcut get-default-launcher  <span class="c">:: which app is the home app</span>
 adb shell cmd package set-home-activity com.theirlnetwork.player/.MainActivity  <span class="c">:: make ours the home app</span>
 adb shell dumpsys window | findstr mCurrentFocus  <span class="c">:: what's on screen now</span>
-adb shell dpm set-device-owner &lt;pkg&gt;/&lt;recv&gt;  <span class="c">:: set device owner (see section 8)</span>
+adb shell dpm set-device-owner com.theirlnetwork.player/.IrlDeviceAdminReceiver  <span class="c">:: set device owner (no accounts on the box)</span>
 adb shell dpm list-owners                    <span class="c">:: verify device owner</span>
 adb logcat | findstr /i "theirlnetwork"      <span class="c">:: watch our app's logs</span>
+adb logcat -s theirlnetwork.update           <span class="c">:: watch the auto-update checks</span>
 adb reboot                                   <span class="c">:: reboot the board</span></code></pre><button class="copy" type="button">Copy</button></div>
     </div>
     </details>
@@ -739,17 +698,17 @@ adb reboot                                   <span class="c">:: reboot the board
 
   <footer>
     <span>IRL Player for Android · IRL Network · <a href="index.html">main guide</a></span>
-    <span id="footer-versions">Guide version 30 · Android app <span data-apk-version></span></span>
+    <span id="footer-versions">Guide version 31 · Android app <span data-apk-version></span></span>
   </footer>
 </div>
 
 <script>
   // ONE place for the Android build's version. Every file name, download link,
   // URL and command on this page is filled in from it, so a new APK release
-  // means: drop the file in packages/android-arm64/, bump this constant, and
-  // the matching link + version text in index.html. Keep it in step with the
+  // means: drop the file, its .sha1 and CI's update.json in packages/android-arm64/,
+  // bump this constant, and the matching link + version text in index.html. Keep it in step with the
   // "android-apk" link in index.html.
-  var APK_VERSION = '1.3.1';
+  var APK_VERSION = '1.4.0';
   (function () {
     var file = 'irl-player_' + APK_VERSION + '_arm64.apk';
     var path = 'packages/android-arm64/' + file;
@@ -763,6 +722,11 @@ adb reboot                                   <span class="c">:: reboot the board
     var el = document.getElementById('footer-versions');
     fetch(path, { method: 'HEAD', cache: 'no-store' })
       .then(function (r) { if (!r.ok) el.textContent += ' (Android package missing!)'; })
+      .catch(function () { /* offline or file://: leave as-is */ });
+    // update.json is what device-owner boxes poll; it must point at this same file.
+    fetch('packages/android-arm64/update.json', { cache: 'no-store' })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function (j) { if (j.url !== url) el.textContent += ' (update.json points at ' + (j.versionName || '?') + ', not ' + APK_VERSION + '!)'; })
       .catch(function () { /* offline or file://: leave as-is */ });
   })();
 
