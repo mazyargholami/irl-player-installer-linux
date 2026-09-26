@@ -40,7 +40,7 @@ BASE_URL="${IRL_BASE_URL:-https://linux-player.theirlnetwork.com}"
 # executable content. Only relaxed when the base URL itself is http (tests).
 CURL_HTTPS_ONLY=""
 case "$BASE_URL" in https://*) CURL_HTTPS_ONLY="--proto =https --tlsv1.2";; esac
-VERSION="1.3.0"
+VERSION="1.3.1"
 # Supported platforms (rev >= 37). One line per platform, fields separated
 # by "|":  <id> | <dpkg arch> | <package path> | <devices> | <operating system>
 # The package path is relative to packages/ - one folder per platform, named
@@ -106,7 +106,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=39
+INSTALLER_REV=40
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; record_failure "$*"; exit 1; }
