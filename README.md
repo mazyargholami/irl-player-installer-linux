@@ -31,16 +31,17 @@ The list is the `SUPPORTED_PLATFORMS` block at the top of `install.sh`; see
 
 ```
 ├── index.html                        website: install / uninstall / help guide
+├── android-guide.html                website: technician's guide for the Android venue box (RK3568)
 ├── install.sh                        one-line installer (platform-aware)
 ├── uninstall.sh                      one-line uninstaller
 ├── screen.txt                        fleet screen switch, Linux devices ("1" on / "0" off)
 ├── android_screen.txt                fleet screen switch, Android boxes (same contract)
 ├── packages/                         one folder per platform (named after its id)
 │   ├── rpi-arm64/
-│   │   └── irl-player_1.3.0_arm64.deb    one .deb per version (older ones kept)
+│   │   └── irl-player_1.3.1_arm64.deb    one .deb per version (older ones kept)
 │   └── android-arm64/
-│       ├── irl-player_1.3.0_arm64.apk    the Android box build (served only, not installer-managed)
-│       └── irl-player_1.3.0_arm64.apk.sha1   its checksum (sha1sum -c)
+│       ├── irl-player_1.3.1_arm64.apk    the Android box build (served only, not installer-managed)
+│       └── irl-player_1.3.1_arm64.apk.sha1   its checksum (sha1sum -c)
 └── .github/workflows/deploy-pages.yml   auto-deploys the website to GitHub Pages
 ```
 
@@ -115,9 +116,13 @@ It is *not* an installer platform: nothing in
 `install.sh` or `SUPPORTED_PLATFORMS` knows about it, the box has no
 auto-update, watchdog or telemetry, and the site's "Have an Android box
 instead?" section links the file by hand (USB stick → install → set as the
-Home app). To release a new Android build: drop
+Home app). `android-guide.html` is the technician's page for the RK3568
+venue box (YS-M68): ADB from Windows, removing the factory ad app,
+installing over ADB, deployment checklist. To release a new Android build: drop
 `packages/android-arm64/irl-player_<version>_arm64.apk` in, update the link
-and version text in `index.html`, bump the guide version. Every APK must be
+and version text in `index.html`, set `APK_VERSION` in `android-guide.html`
+(every file name and command on that page derives from it), bump the guide
+version. Every APK must be
 signed with the same release key (certificate SHA-256 ending `…8cebd5`) or
 boxes refuse it as an update; the key and the full install/adb/log guide live
 in the `irl-player` repo (`docs/android-install.md`).
