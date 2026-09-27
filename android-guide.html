@@ -285,7 +285,7 @@
     <a href="#inspect"><b>5</b> What's installed</a>
     <a href="#factory-app"><b>6</b> Remove the factory app</a>
     <a href="#install"><b>7</b> Install the player</a>
-    <a href="#device-owner"><b>8</b> Device Owner &amp; auto-update</a>
+    <a href="#device-owner"><b>8</b> Device Owner, auto-update &amp; fleet panel</a>
     <a href="#checklist"><b>9</b> Deployment checklist</a>
     <a href="#linux"><b>10</b> Linux option</a>
     <a href="#commands"><b>11</b> Command reference</a>
@@ -586,12 +586,34 @@ adb logcat -d | findstr /i "device owner"      <span class="c">:: expect: [Andro
       <code>update.json</code> that CI writes next to it into <code>packages/android-arm64/</code> on this
       site, and update the download link on both pages. <strong>Never hand-write
       <code>update.json</code></strong>: its <code>versionCode</code> is the arm64 build's code (2000 + the
-      build number — 1.3.1 is 2002, 1.3.2 is 2003, 1.4.0 is 2004) and the boxes only move to a strictly
+      build number — 1.3.1 is 2002, 1.3.2 is 2003, 1.4.0 is 2004, 1.5.0 is 2005) and the boxes only move to a strictly
       higher one.</p>
       <div class="note"><strong>Rules that must never be broken:</strong> the package name
       <code>com.theirlnetwork.player</code> and the signing key stay the same forever, and
       <code>versionCode</code> always increases. Change either and every box rejects the update as a
       different app.</div>
+
+      <h3>8.5 The box in the fleet panel (version 1.5.0 and later)</h3>
+      <p>Since version 1.5.0 the app reports itself to the IoT config panel
+      (<code>iot-config.theirlnetwork.com</code>), the same panel the Raspberry Pi devices report to:
+      app version, device owner state, uptime, memory and storage, network, display and the last
+      update check, every 5 minutes and about 30 s after each start. Nothing is set up on the box for
+      this. A box on 1.4.0 or older does not appear at all.</p>
+      <ol>
+        <li>The first report registers the box as a <strong>pending</strong> device. Approve it in the panel
+        like a Pi; from then on it counts as online while it has reported in the last 15 minutes.</li>
+        <li>The panel's <em>Restart player</em> button relaunches the app; <em>Reboot device</em> only works
+        while the player is the box's device owner (section 8.1).</li>
+      </ol>
+      <p>Read the box's serial to find it in the panel (it is the box's Android ID, which changes only on
+      a factory reset — after one, approve the box again as a new device):</p>
+      <div class="codebox"><pre><code>adb shell am broadcast -a com.theirlnetwork.player.TELEMETRY_SERIAL -n com.theirlnetwork.player/.TelemetryControlReceiver
+<span class="c">:: Broadcast completed: result=0, data="9774d56d682e549c"</span>
+adb logcat -s theirlnetwork.telemetry        <span class="c">:: each report: "posted (tick): HTTP 200, ..."</span></code></pre><button class="copy" type="button">Copy</button></div>
+      <div class="note"><code>adb shell settings get secure android_id</code> is <strong>not</strong> that
+      serial: since Android 8 it returns the shell's own id, not the app's. Use the broadcast above.</div>
+      <p>Field-by-field details and the hand controls (force a report) are in <code>docs/android-install.md</code>
+      of the <code>irl-player</code> app repository, section "Telemetry".</p>
     </div>
     </details>
   </section>
@@ -618,8 +640,9 @@ adb logcat -d | findstr /i "device owner"      <span class="c">:: expect: [Andro
         <li>Reboot, confirm it starts fullscreen in portrait</li>
         <li>Confirm video plays smoothly and the screen never sleeps</li>
         <li><span>Confirm the update check reaches our server <small><code>adb logcat -s theirlnetwork.update</code> shows a check with no error</small></span></li>
+        <li><span>Approve the box in the IoT panel <small>it appears as pending within a minute or two; find it by the serial from <code>TELEMETRY_SERIAL</code> (section 8.5)</small></span></li>
         <li>Pair the screen from the dashboard with the code on the display</li>
-        <li>Record the board's MAC / serial in our fleet list</li>
+        <li><span>Record the board's MAC / serial in our fleet list <small>the panel serial is the one to record</small></span></li>
       </ul>
     </div>
     </details>
@@ -694,6 +717,8 @@ adb shell dpm set-device-owner com.theirlnetwork.player/.IrlDeviceAdminReceiver 
 adb shell dpm list-owners                    <span class="c">:: verify device owner</span>
 adb logcat | findstr /i "theirlnetwork"      <span class="c">:: watch our app's logs</span>
 adb logcat -s theirlnetwork.update           <span class="c">:: watch the auto-update checks</span>
+adb logcat -s theirlnetwork.telemetry        <span class="c">:: watch the reports to the fleet panel</span>
+adb shell am broadcast -a com.theirlnetwork.player.TELEMETRY_SERIAL -n com.theirlnetwork.player/.TelemetryControlReceiver  <span class="c">:: the box's serial in the panel</span>
 adb reboot                                   <span class="c">:: reboot the board</span></code></pre><button class="copy" type="button">Copy</button></div>
     </div>
     </details>
@@ -701,7 +726,7 @@ adb reboot                                   <span class="c">:: reboot the board
 
   <footer>
     <span>IRL Player for Android · IRL Network · <a href="index.html">main guide</a></span>
-    <span id="footer-versions">Guide version 32 · Android app <span data-apk-version></span></span>
+    <span id="footer-versions">Guide version 33 · Android app <span data-apk-version></span></span>
   </footer>
 </div>
 
@@ -711,7 +736,7 @@ adb reboot                                   <span class="c">:: reboot the board
   // means: drop the file, its .sha1 and CI's update.json in packages/android-arm64/,
   // bump this constant, and the matching link + version text in index.html. Keep it in step with the
   // "android-apk" link in index.html.
-  var APK_VERSION = '1.4.0';
+  var APK_VERSION = '1.5.0';
   (function () {
     var file = 'irl-player_' + APK_VERSION + '_arm64.apk';
     var path = 'packages/android-arm64/' + file;
