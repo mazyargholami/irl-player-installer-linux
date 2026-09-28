@@ -1,7 +1,7 @@
 {
-  "versionCode": 2007,
-  "versionName": "1.5.2",
-  "url": "https://linux-player.theirlnetwork.com/packages/android-arm64/irl-player_1.5.2_arm64.apk",
-  "sha256": "e02909ddf61dbf3b5821fff08fc8b71c537c98c9d494cb46ff6eabeb985a219d",
+  "versionCode": 2008,
+  "versionName": "1.5.3",
+  "url": "https://linux-player.theirlnetwork.com/packages/android-arm64/irl-player_1.5.3_arm64.apk",
+  "sha256": "48c49e403540aab4c29730a3a360fd7a5268409e8b88090a0ca1c89de1f17cdb",
   "canaryDelayHours": 24
 }
