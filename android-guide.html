@@ -517,13 +517,15 @@ adb shell dumpsys window | findstr /i "mCurrentFocus"</code></pre><button class=
         <li>Keeps the screen on (<code>FLAG_KEEP_SCREEN_ON</code>) so it never sleeps</li>
         <li>Locks orientation to <strong>portrait</strong> (the panel is mounted portrait)</li>
         <li>Hides the status and navigation bars (immersive mode)</li>
-        <li>Since version 1.5.2 decodes every CMS-transcoded creative (plain 8-bit H.264) in the RK3568's
-        <strong>hardware decoder</strong>, anything else on the CPU; on a multi-zone screen the zones share the
-        decoder threads and pre-open their next ads a moment apart. <code>adb logcat -s flutter</code> prints
-        one <code>[Video] decoder for &lt;url&gt;: hardware (avc1 profile 100)</code> line per creative;
-        a <code>[Perf] zone N LAGGING</code> line is a run that stuttered. A zone showing a <strong>flat green
-        picture</strong> is a creative the hardware path let through wrongly: roll the box back to the previous
-        APK (<code>adb install -r -d</code>) and report the creative's URL.</li>
+        <li>Since version 1.5.3 decodes <strong>every</strong> creative on the <strong>CPU</strong> again.
+        Version 1.5.2 had put CMS-transcoded H.264 through the RK3568's hardware decoder, and on the
+        two-video-zone portrait layout that came up with the top zone a flat green picture and the bottom one
+        black — so the hardware path is off for all files. <code>adb logcat -s flutter</code> prints the board's
+        codec inventory once at boot and <strong>no</strong> <code>[Video] decoder for &lt;url&gt;</code> lines
+        after it; a <code>[Perf] zone N LAGGING</code> line is a run that stuttered, and one per slot means the
+        CPU is not keeping up. A zone that is flat green or black should not happen on this build: roll the box
+        back to <strong>1.5.1</strong>, the last build before the hardware decoder was tried
+        (<code>adb install -r -d</code> — not 1.5.2, which has the fault), and report the creative's URL.</li>
         <li>Restarts playback if a video errors; watches the player position to catch freezes</li>
         <li>Caches content locally so it keeps playing when the network drops</li>
       </ul>
@@ -592,7 +594,7 @@ adb logcat -d | findstr /i "device owner"      <span class="c">:: expect: [Andro
       <code>update.json</code> that CI writes next to it into <code>packages/android-arm64/</code> on this
       site, and update the download link on both pages. <strong>Never hand-write
       <code>update.json</code></strong>: its <code>versionCode</code> is the arm64 build's code (2000 + the
-      build number — 1.3.1 is 2002, 1.3.2 is 2003, 1.4.0 is 2004, 1.5.0 is 2005, 1.5.1 is 2006, 1.5.2 is 2007) and the boxes only move to a strictly
+      build number — 1.3.1 is 2002, 1.3.2 is 2003, 1.4.0 is 2004, 1.5.0 is 2005, 1.5.1 is 2006, 1.5.2 is 2007, 1.5.3 is 2008) and the boxes only move to a strictly
       higher one.</p>
       <div class="note"><strong>Rules that must never be broken:</strong> the package name
       <code>com.theirlnetwork.player</code> and the signing key stay the same forever, and
@@ -744,7 +746,7 @@ adb reboot                                   <span class="c">:: reboot the board
 
   <footer>
     <span>IRL Player for Android · IRL Network · <a href="index.html">main guide</a></span>
-    <span id="footer-versions">Guide version 35 · Android app <span data-apk-version></span></span>
+    <span id="footer-versions">Guide version 36 · Android app <span data-apk-version></span></span>
   </footer>
 </div>
 
@@ -754,7 +756,7 @@ adb reboot                                   <span class="c">:: reboot the board
   // means: drop the file, its .sha1 and CI's update.json in packages/android-arm64/,
   // bump this constant, and the matching link + version text in index.html. Keep it in step with the
   // "android-apk" link in index.html.
-  var APK_VERSION = '1.5.2';
+  var APK_VERSION = '1.5.3';
   (function () {
     var file = 'irl-player_' + APK_VERSION + '_arm64.apk';
     var path = 'packages/android-arm64/' + file;
