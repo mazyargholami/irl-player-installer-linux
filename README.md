@@ -38,7 +38,7 @@ The list is the `SUPPORTED_PLATFORMS` block at the top of `install.sh`; see
 ├── android_screen.txt                fleet screen switch, Android boxes (same contract)
 ├── packages/                         one folder per platform (named after its id)
 │   ├── rpi-arm64/
-│   │   └── irl-player_1.5.2_arm64.deb    one .deb per version (older ones kept)
+│   │   └── irl-player_1.5.3_arm64.deb    one .deb per version (older ones kept)
 │   └── android-arm64/
 │       ├── irl-player_1.5.3_arm64.apk    the Android box build (served only, not installer-managed; the previous one stays as rollback)
 │       ├── irl-player_1.5.3_arm64.apk.sha1   its checksum (sha1sum -c)
