@@ -40,8 +40,8 @@ The list is the `SUPPORTED_PLATFORMS` block at the top of `install.sh`; see
 │   ├── rpi-arm64/
 │   │   └── irl-player_1.5.4_arm64.deb    one .deb per version (older ones kept)
 │   └── android-arm64/
-│       ├── irl-player_1.5.4_arm64.apk    the Android box build (served only, not installer-managed; the previous one stays as rollback)
-│       ├── irl-player_1.5.4_arm64.apk.sha1   its checksum (sha1sum -c)
+│       ├── irl-player_1.5.5_arm64.apk    the Android box build (served only, not installer-managed; the previous one stays as rollback)
+│       ├── irl-player_1.5.5_arm64.apk.sha1   its checksum (sha1sum -c)
 │       └── update.json                   what device-owner boxes poll hourly (copied from CI, never hand-written)
 └── .github/workflows/deploy-pages.yml   auto-deploys the website to GitHub Pages
 ```
