@@ -40,7 +40,7 @@ BASE_URL="${IRL_BASE_URL:-https://linux-player.theirlnetwork.com}"
 # executable content. Only relaxed when the base URL itself is http (tests).
 CURL_HTTPS_ONLY=""
 case "$BASE_URL" in https://*) CURL_HTTPS_ONLY="--proto =https --tlsv1.2";; esac
-VERSION="1.5.5"
+VERSION="1.5.6"
 # Supported platforms (rev >= 37). One line per platform, fields separated
 # by "|":  <id> | <dpkg arch> | <package path> | <devices> | <operating system>
 # The package path is relative to packages/ - one folder per platform, named
@@ -106,7 +106,7 @@ MANAGED_FILES="
 # -------------------------------------------------------------
 
 # Bumped on every change to this script — shown at start of every run
-INSTALLER_REV=47
+INSTALLER_REV=48
 
 log() { printf '\033[1;32m[irl-player]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[irl-player] ERROR:\033[0m %s\n' "$*" >&2; record_failure "$*"; exit 1; }
@@ -518,6 +518,13 @@ EOF
 # one it rebooted for, the picture is a static page (e.g. the "Pair this
 # screen" QR), not a freeze a reboot can cure — reboots slow to once a day
 # so a forgotten unpaired device doesn't grind itself down every 2 hours.
+# Unpaired (rev >= 48): the brake never engaged for the pairing QR once the
+# player began minting a fresh code per boot -- every post-reboot QR differs
+# -- so an unpaired screen was restarted every ~6.5 min and rebooted every
+# 2 h for as long as nobody paired it (the rpi5 canary, 2026-11-04..06,
+# after a power cut emptied the player's settings file). The watchdog now
+# reads the player's settings and stands down while it is not paired: the
+# QR is meant to be still, and nothing a restart or a reboot does pairs it.
 log "Installing freeze watchdog ..."
 
 install_script /usr/local/bin/irl-watchdog <<'EOF'
@@ -533,8 +540,17 @@ GRACE=120          # after acting, give the player this long to come back
 MAX_RESTARTS=3     # restarts before escalating to a reboot
 REBOOT_BACKOFF=7200  # never watchdog-reboot more than once per 2 hours
 STATIC_BACKOFF=86400 # reboot backoff when the screen is a static page (see header)
+PREFS=/home/irlplayer/.local/share/IRLPlayer/shared_preferences.json
 
 mkdir -p "$STATE_DIR"
+
+# The player is paired when its settings say so. No file, an empty or torn
+# one, or is_registered false: it is on the pairing QR. A grep, not a JSON
+# parser, so a missing interpreter can't read as "unpaired" and switch the
+# watchdog off; the player writes compact JSON, so the key and value touch.
+paired() {
+  grep -q '"flutter.is_registered":true' "$PREFS" 2>/dev/null
+}
 
 # Hash of the current screen, captured as the kiosk user via grim.
 # Fails (returns 1) rather than guessing when the screen can't be read.
@@ -573,6 +589,16 @@ while true; do
     continue
   fi
   [ "$now" -lt "$grace_until" ] && continue
+
+  # pairing QR: still by design, and nothing a restart or reboot does pairs it
+  if ! paired; then
+    [ "${unpaired:-}" = 1 ] || echo "player not paired — pairing screen is static by design, standing down until it is"
+    unpaired=1
+    last_hash=""; static_for=0; healthy_for=0; restarts=0
+    continue
+  fi
+  [ "${unpaired:-}" = 1 ] && echo "player paired — watching the screen again"
+  unpaired=0
 
   h="$(capture)" || continue
 
