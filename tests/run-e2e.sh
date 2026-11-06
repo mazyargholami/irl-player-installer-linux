@@ -633,6 +633,31 @@ kill $WD 2>/dev/null; wait $WD 2>/dev/null
 check "grep -q REBOOT '$ROOT/simlog'" "new frozen screen after a reboot: reboot ladder still fires"
 check "! grep -q 'static page' '$E2E/wd3.out'" "real freeze not misread as a static page"
 
+echo "== 9c. Freeze watchdog: an unpaired player (pairing QR) is left alone =="
+# The QR is static by design and carries a fresh code per boot, so the
+# static-page brake above never matches it; the watchdog reads the player's
+# settings instead. Empty file = what a power cut left on the rpi5 canary.
+PREFS_FIX="$ROOT/home/irlplayer/shared_preferences.json"
+cp "$PREFS_FIX" "$E2E/prefs.bak"
+: > "$PREFS_FIX"
+echo frame-pairing-qr > "$ROOT/frame.dat"
+rm -f "$ROOT/var/lib/irl-player/last-watchdog-reboot" "$ROOT/var/lib/irl-player/last-reboot-hash"
+: > "$ROOT/simlog"
+PATH="$ROOT/simbin:$PATH" timeout 40 bash "$E2E/wd-fast" > "$E2E/wd4.out" 2>&1 &
+WD=$!
+sleep 8   # well past FREEZE_AFTER=3 with a frozen picture
+check "! grep -q 'restart irl-player-kiosk' '$ROOT/simlog' && ! grep -q REBOOT '$ROOT/simlog'" "unpaired (empty settings file): no restart, no reboot"
+check "[ \"\$(grep -c 'not paired' '$E2E/wd4.out')\" = 1 ]" "standing down logged once, not every check"
+printf '{"flutter.is_registered":false}' > "$PREFS_FIX"
+sleep 4
+check "! grep -q 'restart irl-player-kiosk' '$ROOT/simlog'" "unpaired (is_registered false): no restart"
+# paired again (the same frozen picture): the normal ladder resumes
+cp "$E2E/prefs.bak" "$PREFS_FIX"
+until grep -q 'restart irl-player-kiosk' "$ROOT/simlog" 2>/dev/null; do sleep 1; kill -0 $WD 2>/dev/null || break; done
+kill $WD 2>/dev/null; wait $WD 2>/dev/null
+check "grep -q 'player paired' '$E2E/wd4.out'" "pairing noticed and logged"
+check "grep -q 'restart irl-player-kiosk' '$ROOT/simlog'" "paired and frozen: restart ladder resumes"
+
 echo "== 10. Network watchdog: offline -> nudge networking, never reboot =="
 # Offline screens keep looping their cached ads (rev 29): the watchdog may
 # restart networking (10 min, then every 30 min) but must never reboot, and
