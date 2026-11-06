@@ -40,7 +40,7 @@ BASE_URL="${IRL_BASE_URL:-https://linux-player.theirlnetwork.com}"
 # executable content. Only relaxed when the base URL itself is http (tests).
 CURL_HTTPS_ONLY=""
 case "$BASE_URL" in https://*) CURL_HTTPS_ONLY="--proto =https --tlsv1.2";; esac
-VERSION="1.5.5"
+VERSION="1.5.6"
 # Supported platforms (rev >= 37). One line per platform, fields separated
 # by "|":  <id> | <dpkg arch> | <package path> | <devices> | <operating system>
 # The package path is relative to packages/ - one folder per platform, named
